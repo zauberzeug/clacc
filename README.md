@@ -46,7 +46,7 @@ clacc add work           # sign in to another account in the browser; nothing el
 clacc work               # move every session to work
 clacc personal           # and back
 clacc run work           # one new session on work's own login; its first start signs in
-clacc run work -c        # arguments after the name go to claude
+clacc run work -c        # everything after the name goes to claude, a leading -- dropped
 clacc rename work acme   # give a stored account another name
 clacc                    # show the active account, the stored ones and the local ones
 ```
@@ -67,13 +67,18 @@ around refreshing a token, writing a token and writing its config. It moves the 
 sessions pick up the new token at their next request.
 
 **One session on its own.** `clacc run <name>` starts Claude Code with `CLAUDE_CONFIG_DIR` set to
-`~/.clacc/<name>.local`. That folder holds a login and a `.claude.json` of its own. For settings,
-skills, plugins, projects with their memory, and history, it links to `~/.claude`, so the session
-works like any other. It cannot share `~/.claude.json`, because Claude Code regularly writes the
-account of the token it runs on into that file, and every other session would then show that
-account. So a `run` session has a second, independent login of the account, made at its first
-start, and each start checks that this login belongs to the account and organisation stored under
-that name.
+`~/.clacc/<name>.local`. That folder holds a login and a `.claude.json` of its own, and links to
+`~/.claude` for skills, plugins, projects with their memory, and history, so the session works like
+any other. It cannot share `~/.claude.json`, because Claude Code regularly writes the account of the
+token it runs on into that file, and every other session would then show that account. So a `run`
+session has a second, independent login of the account, made at its first start, and each start
+checks that this login belongs to the account and organisation stored under that name. Calls that
+start no session, such as `--version` or `mcp list`, need no login and go straight to claude.
+
+The folder's `settings.json` is a copy of yours, renewed at every start, except for the model.
+Accounts offer different models, so a model picked with `/model` in a `run` session stays that
+account's default. Any other setting such a session changes goes back to your own settings at the
+next start.
 
 **Care with tokens.** When Claude Code refreshes a token, the server can hand out a new refresh
 token and retire the old one, so a copy of a login can stop working at the next refresh. clacc

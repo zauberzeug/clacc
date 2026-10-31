@@ -31,7 +31,9 @@ token=$claude_dir/.credentials.json
 locks=("$claude_dir/.oauth_refresh.lock" "$(realpath -m "$claude_dir").lock" "$claude_dir/.storage-write.lock" "$config.lock")
 # What a `run` session shares with Claude Code's own folder; everything else in its folder is its own.
 shared_dirs=(projects skills agents commands output-styles plugins plans agent-memory todos file-history paste-cache shell-snapshots session-env sessions ide)
-shared_files=(settings.json CLAUDE.md keybindings.json history.jsonl statusline-command.sh)
+shared_files=(CLAUDE.md keybindings.json history.jsonl statusline-command.sh)
+# The settings a `run` folder keeps for its own account, because another account may not offer them.
+own_settings='["model"]'
 held=()
 login_dir=""
 trap cleanup EXIT
@@ -54,12 +56,12 @@ main() {
 usage() {
   if [[ ${1:-2} != 0 ]]; then exec >&2; fi
   cat << 'EOF'
-clacc                     show the active account and the stored ones
-clacc <name>              switch all sessions, running ones included, to <name>
-clacc run <name> [args]   start one session on <name>'s own login; the others keep theirs
-clacc add <name>          sign in to another account without touching the active one
-clacc save <name>         store the active login under <name>, e.g. after a manual /login
-clacc rename <old> <new>  give a stored account another name
+clacc                       show the active account and the stored ones
+clacc <name>                switch all sessions, running ones included, to <name>
+clacc run <name> [args...]  start one session on <name>'s own login, passing args to claude
+clacc add <name>            sign in to another account without touching the active one
+clacc save <name>           store the active login under <name>, e.g. after a manual /login
+clacc rename <old> <new>    give a stored account another name
 EOF
   exit "${1:-2}"
 }
@@ -107,27 +109,39 @@ switch() {
   echo "switched from $current to $target ($(active_email)); running sessions follow at their next request"
 }
 
-# One session on <name>'s own login. Its first start signs in, in the browser.
+# One session on <name>'s own login, with the remaining arguments passed to claude. The first
+# session start signs in, in the browser.
 run_local() {
   local name=$1 dir want
   local sign_in=(auth login --claudeai)
   shift
+  if [[ ${1:-} == -- ]]; then shift; fi
   check_name "$name"
   dir=$store/$name.local
   prepare_local "$dir"
   export CLACC_CLAUDE_CONFIG_DIR=$global
   export CLAUDE_CONFIG_DIR=$dir
-  if [[ ${1:-} != auth ]]; then
-    if [[ ! -f $dir/.credentials.json ]]; then
-      [[ -t 0 && -t 1 ]] || die "$name has no login of its own yet; start it once in a terminal to sign in"
-      want=$(jq -r '.emailAddress // empty' "$store/$name.account.json" 2> /dev/null || true)
-      if [[ -n $want ]]; then sign_in+=(--email "$want"); fi
-      echo "First start on $name: sign in once${want:+ as $want} in the browser."
-      claude "${sign_in[@]}" || die "no login happened"
-    fi
-    check_local_account "$name" "$dir"
+  if [[ ! -f $dir/.credentials.json ]] && starts_session "$@"; then
+    [[ -t 0 && -t 1 ]] || die "$name has no login of its own yet; start it once in a terminal to sign in"
+    want=$(jq -r '.emailAddress // empty' "$store/$name.account.json" 2> /dev/null || true)
+    if [[ -n $want ]]; then sign_in+=(--email "$want"); fi
+    echo "First start on $name: sign in once${want:+ as $want} in the browser."
+    claude "${sign_in[@]}" || die "no login happened"
   fi
+  if [[ ${1:-} != auth ]]; then check_local_account "$name" "$dir"; fi
   exec claude "$@"
+}
+
+# Whether claude arguments start a session: none at all, or options such as -c or --model.
+# Help, the version and subcommands such as mcp or auth need no login, and a call that begins
+# with a prompt signs in through claude's own /login.
+starts_session() {
+  case ${1:-} in
+    "") return 0 ;;
+    -h | --help | -v | --version) return 1 ;;
+    -*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 # A login of the wrong account or organisation would run every later `run` session on it.
@@ -155,6 +169,44 @@ prepare_local() {
   for entry in "${shared_files[@]}"; do
     if [[ -e $claude_dir/$entry || -e $dir/$entry ]]; then share "$dir" "$entry"; fi
   done
+  sync_settings "$dir"
+}
+
+# A run folder's settings.json is a file of its own: the shared settings, plus the folder's own
+# model once one of its sessions picked one with /model. Any other change a session made there
+# goes back to the shared file at the next start; when the shared file changed the same setting
+# meanwhile, the shared value stays. So /model in one account never sets another account's model.
+sync_settings() {
+  local dir=$1
+  local shared=$claude_dir/settings.json own=$dir/settings.json base=$dir/.settings-base.json keep=$dir/.settings-own.json current=null out mode
+  if [[ -f $own ]] && ! current=$(jq -c . "$own" 2> /dev/null); then
+    warn "$own is not valid JSON; the changes in it are dropped"
+    current=null
+  fi
+  # A missing or unreadable folder file, or a missing base, counts as no change at all.
+  # shellcheck disable=SC2016 # $s, $o, $b, $k and $only are jq variables
+  out=$(jq -n --argjson only "$own_settings" --argjson o "$current" \
+    --argjson s "$(jq -c . "$shared" 2> /dev/null || echo '{}')" \
+    --argjson b "$(jq -c . "$base" 2> /dev/null || echo null)" \
+    --argjson k "$(jq -c . "$keep" 2> /dev/null || echo '{}')" '
+    ($b // $o // {}) as $b | ($o // $b) as $o
+    | [[$o, $b] | map(keys[]) | unique[] | select($o[.] != $b[.])] as $changed
+    | ($k + ([$changed[] | select(IN($only[])) | {(.): $o[.]}] | add // {}) | with_entries(select(.value != null))) as $k
+    | [$changed[] | select(IN($only[]) | not)] as $session
+    | [$session[] | select($s[.] == $b[.])] as $push
+    | (reduce $push[] as $key ($s; if $o | has($key) then .[$key] = $o[$key] else del(.[$key]) end)) as $s2
+    | {shared: (if $push == [] then null else $s2 end), kept: [$session[] | select($s[.] != $b[.] and $s[.] != $o[.])], keep: $k, own: ($s2 + $k)}')
+  if [[ $(jq -c .shared <<< "$out") != null ]]; then
+    mode=$(stat -c %a "$shared" 2> /dev/null || echo 600)
+    jq_to "$shared" .shared <<< "$out"
+    chmod "$mode" "$shared"
+  fi
+  if [[ $(jq -c .kept <<< "$out") != "[]" ]]; then
+    warn "kept the shared value of $(jq -r '.kept | join(", ")' <<< "$out"), which a session of $(basename "$dir" .local) changed too"
+  fi
+  jq_to "$keep" .keep <<< "$out"
+  jq_to "$own" .own <<< "$out"
+  jq_to "$base" .own <<< "$out"
 }
 
 # Link <entry> of a run folder to Claude Code's own folder. One that a session made there

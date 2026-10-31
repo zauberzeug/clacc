@@ -27,6 +27,7 @@ setup() {
   chmod 600 "$HOME/.claude/.credentials.json"
   echo '{"numStartups":5,"hasCompletedOnboarding":true,"cachedGrowthBookFeatures":{"f":1},"groveConfigCache":{},"oauthAccount":{"accountUuid":"aaaaaaaa-0000-0000-0000-000000000000","emailAddress":"a@x"},"projects":{"p":{"hasTrustDialogAccepted":true,"hasUnseenTeamArtifacts":true}}}' > "$HOME/.claude.json"
   echo '{"model":"opus"}' > "$HOME/.claude/settings.json"
+  chmod 644 "$HOME/.claude/settings.json"
   echo "memory note" > "$HOME/.claude/projects/p/memory/m.md"
   echo "skill" > "$HOME/.claude/skills/s/SKILL.md"
   echo "global instructions" > "$HOME/.claude/CLAUDE.md"
@@ -52,7 +53,7 @@ run
 check "status names the active account" '[[ $out == *"active: alpha (a@x)"* ]]'
 check "status lists the parked one" '[[ $out == *"stored: beta (b@x)"* ]]'
 run --help
-check "--help prints the commands and exits 0" '[[ $code == 0 && $out == *"clacc run <name> [args]"* ]]'
+check "--help prints the commands and exits 0" '[[ $code == 0 && $out == *"clacc run <name> [args...]"*"passing args to claude"* ]]'
 run --bogus
 check "a wrong option prints the commands and exits 2" '[[ $code == 2 && $out == *"clacc add <name>"* ]]'
 STUB_UNAME=Darwin run
@@ -169,7 +170,8 @@ L=$S/beta.local
 run run beta
 check "no login yet and no terminal: refused" '[[ $code == 1 && $out == *"no login of its own yet"* ]]'
 check "its config has no account record, no account caches, the rest kept" '[[ $(jq -c "[.oauthAccount, .cachedGrowthBookFeatures, .groveConfigCache, .numStartups, .hasCompletedOnboarding, .projects.p.hasTrustDialogAccepted, .projects.p.hasUnseenTeamArtifacts]" "$L/.claude.json") == "[null,null,null,5,true,true,null]" ]]'
-check "projects with memory, skills, settings and CLAUDE.md are links to ~/.claude" '[[ -L $L/projects && $(cat "$L/projects/p/memory/m.md") == "memory note" && -L $L/skills && -L $L/settings.json && -L $L/CLAUDE.md ]]'
+check "projects with memory, skills and CLAUDE.md are links to ~/.claude" '[[ -L $L/projects && $(cat "$L/projects/p/memory/m.md") == "memory note" && -L $L/skills && -L $L/CLAUDE.md ]]'
+check "settings.json is a file of its own with the shared settings" '[[ -f $L/settings.json && ! -L $L/settings.json && $(jq -c . "$L/settings.json") == "{\"model\":\"opus\"}" ]]'
 check "folder and config readable by you only" '[[ $(stat -c %a "$L") == 700 && $(stat -c %a "$L/.claude.json") == 600 ]]'
 STUB_LOGIN=b run_tty run beta --resume x
 check "first start in a terminal: exit 0" '[[ $code == 0 ]]'
@@ -193,6 +195,45 @@ rm "$L/CLAUDE.md"
 echo "own" > "$L/CLAUDE.md"
 run run beta
 check "one that differs from ~/.claude is reported and left alone" '[[ $code == 0 && $out == *"CLAUDE.md is not shared"* && $(cat "$L/CLAUDE.md") == own && $(cat "$HOME/.claude/CLAUDE.md") == "global instructions" ]]'
+
+echo "--- run: arguments for claude"
+setup
+run run beta --version
+check "--version needs no login and goes straight to claude" '[[ $code == 0 && $(last_log) == "session config=$L secure=unset global= args=--version" && $(grep -c "^auth" "$HOME/stub.log") == 0 ]]'
+run run beta mcp list
+check "so do subcommands such as mcp" '[[ $code == 0 && $(last_log) == "session config=$L secure=unset global= args=mcp list" ]]'
+STUB_LOGIN=b run_tty run beta "fix the tests"
+check "a call that begins with a prompt leaves the sign-in to claude" '[[ $code == 0 && $(last_log) == "session config=$L secure=unset global= args=fix the tests" && $(grep -c "^auth" "$HOME/stub.log") == 0 ]]'
+STUB_LOGIN=b run_tty run beta -- --model team-model -c
+check "options start a session: sign in first, then pass them on, without the --" '[[ $code == 0 && $(grep -c "^auth" "$HOME/stub.log") == 1 && $(last_log) == "session config=$L secure=unset global= args=--model team-model -c" ]]'
+
+echo "--- run: the model is the folder's own, every other setting shared"
+model_pick() { jq ".model = \"$1\"" "$L/settings.json" > "$HOME/x" && mv "$HOME/x" "$L/settings.json"; }
+model_pick team-model
+run run beta
+check "a model picked with /model stays the folder's own" '[[ $code == 0 && $(jq -r .model "$L/settings.json") == team-model && $(jq -r .model "$S/beta.local/.settings-own.json") == team-model ]]'
+check "and never reaches the shared settings" '[[ $(jq -c . "$HOME/.claude/settings.json") == "{\"model\":\"opus\"}" ]]'
+jq '.theme = "dark"' "$L/settings.json" > "$HOME/x" && mv "$HOME/x" "$L/settings.json"
+run run beta
+check "any other change a session made goes back to the shared settings" '[[ $code == 0 && $(jq -c . "$HOME/.claude/settings.json") == "{\"model\":\"opus\",\"theme\":\"dark\"}" && $(jq -r .model "$L/settings.json") == team-model ]]'
+check "and the shared file keeps its permissions" '[[ $(stat -c %a "$HOME/.claude/settings.json") == 644 ]]'
+jq '.env = {"X": "1"}' "$HOME/.claude/settings.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude/settings.json"
+run run beta
+check "a shared change reaches the folder, its own model stays" '[[ $(jq -c "[.env.X, .model, .theme]" "$L/settings.json") == "[\"1\",\"team-model\",\"dark\"]" ]]'
+jq '.theme = "light"' "$L/settings.json" > "$HOME/x" && mv "$HOME/x" "$L/settings.json"
+jq '.theme = "solarized"' "$HOME/.claude/settings.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude/settings.json"
+run run beta
+check "a setting changed on both sides keeps the shared value and says so" '[[ $out == *"kept the shared value of theme"* && $(jq -r .theme "$HOME/.claude/settings.json") == solarized && $(jq -r .theme "$L/settings.json") == solarized ]]'
+jq 'del(.model)' "$L/settings.json" > "$HOME/x" && mv "$HOME/x" "$L/settings.json"
+run run beta
+check "back to the default model: the folder follows the shared one again" '[[ $(jq -r .model "$L/settings.json") == opus && $(jq -c . "$S/beta.local/.settings-own.json") == "{}" ]]'
+echo 'not json' > "$L/settings.json"
+before=$(sum "$HOME/.claude/settings.json")
+run run beta
+check "an unreadable folder file is reported, rebuilt and changes nothing shared" '[[ $out == *"not valid JSON"* && $(sum "$HOME/.claude/settings.json") == "$before" && $(jq -r .model "$L/settings.json") == opus ]]'
+ln -sf "$HOME/.claude/settings.json" "$L/settings.json"
+run run beta
+check "a link from an earlier clacc becomes a file, the shared one untouched" '[[ -f $L/settings.json && ! -L $L/settings.json && $(sum "$HOME/.claude/settings.json") == "$before" ]]'
 
 echo "--- run: refusals"
 setup
@@ -230,7 +271,7 @@ check "the switch works on that folder" '[[ $code == 0 && $(tok "$C/.credentials
 check "and leaves the default folder alone" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 echo '{"model":"sonnet"}' > "$C/settings.json"
 CLAUDE_CONFIG_DIR=$C STUB_LOGIN=b run_tty run beta
-check "a run session there links to that folder and names it to the session" '[[ $code == 0 && $(readlink "$S/beta.local/settings.json") == "$C/settings.json" && $(last_log) == "session config=$S/beta.local secure=unset global=$C args=" ]]'
+check "a run session there links to that folder and names it to the session" '[[ $code == 0 && $(readlink "$S/beta.local/projects") == "$C/projects" && $(jq -r .model "$S/beta.local/settings.json") == sonnet && $(last_log) == "session config=$S/beta.local secure=unset global=$C args=" ]]'
 CLAUDE_CONFIG_DIR=$S/beta.local CLACC_CLAUDE_CONFIG_DIR=$C run
 check "clacc inside that session still sees the folder it came from" '[[ $out == *"active: beta (b@x)"* ]]'
 CLAUDE_CONFIG_DIR=$S/beta.local CLACC_CLAUDE_CONFIG_DIR='' run
