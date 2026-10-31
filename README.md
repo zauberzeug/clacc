@@ -10,15 +10,16 @@ $ clacc
 active: personal (me@example.com)
 stored: work (me@company.com)
 
-$ clacc work
+$ clacc switch work
 switched from personal to work (me@company.com); running sessions follow at their next request
 
 $ clacc run personal
 ```
 
-`clacc work` moves every Claude Code session on the machine to the work account, the running
-ones included, with no restart and no new login. `clacc run personal` starts one more session on
-the personal account, and all the others stay where they are.
+`clacc switch work` moves every Claude Code session on the machine to the work account, the
+running ones included, with no restart and no new login. `clacc run personal` starts one more
+session on the personal account, and all the others stay where they are. A name alone switches
+nothing, so a slip of the keyboard cannot move every session.
 
 ## Why
 
@@ -43,8 +44,8 @@ Or clone this repository and link `clacc` into a folder on your `PATH`.
 ```sh
 clacc save personal      # name the login you have now
 clacc add work           # sign in to another account in the browser; nothing else changes
-clacc work               # move every session to work
-clacc personal           # and back
+clacc switch work        # move every session to work
+clacc switch personal    # and back
 clacc run work           # one new session on work's own login; its first start signs in
 clacc run work -c        # everything after the name goes to claude, a leading -- dropped
 clacc rename work acme   # give a stored account another name

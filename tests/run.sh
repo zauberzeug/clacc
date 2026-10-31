@@ -52,15 +52,23 @@ setup
 run
 check "status names the active account" '[[ $out == *"active: alpha (a@x)"* ]]'
 check "status lists the parked one" '[[ $out == *"stored: beta (b@x)"* ]]'
+run status
+check "status is also a command" '[[ $code == 0 && $out == *"active: alpha (a@x)"* ]]'
+run status extra
+check "status takes no argument" '[[ $code == 2 ]]'
+run beta
+check "a name alone switches nothing and names the command that does" '[[ $code == 2 && $out == *"clacc switch beta"* && $(active_tok) == tokA && $(rec) == a@x ]]'
+run switch
+check "switch without a name: usage, nothing switched" '[[ $code == 2 && $(active_tok) == tokA ]]'
 run --help
-check "--help prints the commands and exits 0" '[[ $code == 0 && $out == *"clacc run <name> [args...]"*"passing args to claude"* ]]'
+check "--help prints the commands and exits 0" '[[ $code == 0 && $out == *"clacc switch <name>"* && $out == *"clacc run <name> [args...]"*"passing args to claude"* ]]'
 run --bogus
 check "a wrong option prints the commands and exits 2" '[[ $code == 2 && $out == *"clacc add <name>"* ]]'
 STUB_UNAME=Darwin run
 check "anything but Linux is refused" '[[ $code == 1 && $out == *"needs Linux"* ]]'
 
 echo "--- switch alpha -> beta"
-run beta
+run switch beta
 check "exit 0" '[[ $code == 0 ]]'
 check "active token is beta" '[[ $(active_tok) == tokB ]]'
 check "alpha token parked" '[[ $(tok "$S/alpha.credentials.json") == tokA ]]'
@@ -75,32 +83,32 @@ check "no lock left behind" no_locks
 check "no temp file left behind" '[[ -z $(find "$HOME" -name "*.tmp.*") ]]'
 
 echo "--- switch to the active one"
-run beta
+run switch beta
 check "says already on beta" '[[ $code == 0 && $out == *"already on beta"* && $(active_tok) == tokB ]]'
 
 echo "--- switch back"
-run alpha
+run switch alpha
 check "active token is alpha again" '[[ $code == 0 && $(active_tok) == tokA && $(rec) == a@x ]]'
 check "beta parked again" '[[ $(tok "$S/beta.credentials.json") == tokB && ! -e $S/alpha.credentials.json ]]'
 
 echo "--- refusals change nothing"
-run nosuch
+run switch nosuch
 check "unknown account refused" '[[ $code == 1 && $out == *"no stored account"* && $(active_tok) == tokA ]]'
-run ../x
+run switch ../x
 check "path outside the store refused" '[[ $code == 1 && $(active_tok) == tokA ]]'
 echo 'not json' > "$S/beta.credentials.json"
-run beta
+run switch beta
 check "unreadable token refused" '[[ $code == 1 && $out == *"unreadable"* && $(active_tok) == tokA && $(rec) == a@x ]]'
 check "no lock left after a refusal" no_locks
 rm "$S/beta.credentials.json"
-run beta
+run switch beta
 check "missing token points to add" '[[ $code == 1 && $out == *"clacc add beta"* ]]'
 
 echo "--- a lock held by a live process"
 setup
 mkdir "$(realpath -m "$HOME/.claude").lock"
 start=$(date +%s)
-run beta
+run switch beta
 check "waits, then gives up" '[[ $code == 1 && $out == *"held by another process"* ]] && (( $(date +%s) - start >= 9 ))'
 check "nothing switched" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 check "the other process keeps its lock, ours are released" '[[ -d $(realpath -m "$HOME/.claude").lock && ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.json.lock ]]'
@@ -109,7 +117,7 @@ rmdir "$(realpath -m "$HOME/.claude").lock"
 echo "--- a token write in progress"
 setup
 mkdir "$HOME/.claude/.storage-write.lock"
-run beta
+run switch beta
 check "waits for Claude Code's token-write lock, then gives up" '[[ $code == 1 && $out == *".storage-write.lock is held"* ]]'
 check "nothing switched while a token was being written" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 rmdir "$HOME/.claude/.storage-write.lock"
@@ -118,13 +126,13 @@ echo "--- a stale lock (untouched for 2 minutes)"
 setup
 mkdir "$(realpath -m "$HOME/.claude").lock"
 touch -d '2 minutes ago' "$(realpath -m "$HOME/.claude").lock"
-run beta
+run switch beta
 check "stale lock cleared, switch done" '[[ $code == 0 && $(active_tok) == tokB ]] && no_locks'
 
 echo "--- a manual /login to an unknown account"
 setup
 jq '.oauthAccount = {accountUuid: "cccccccc-0000-0000-0000-000000000000", emailAddress: "c@x"}' "$HOME/.claude.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude.json"
-run beta
+run switch beta
 check "switch refused, asks to save" '[[ $code == 1 && $out == *"not stored"* && $(active_tok) == tokA ]]'
 run save alpha
 check "save under a name of another account refused" '[[ $code == 1 ]]'
@@ -143,7 +151,7 @@ check "the login ran in a config folder of its own" '[[ $(last_log) == "auth con
 check ".claude.json not written at all" '[[ $(sum "$HOME/.claude.json") == "$before" ]]'
 check "active login untouched" '[[ $(active_tok) == tokA ]]'
 check "login folder removed" '[[ -z $(find "$S" -name "login.*") ]]'
-run delta
+run switch delta
 check "can switch to the added account" '[[ $code == 0 && $(active_tok) == tokD && $(rec) == d@x ]]'
 
 echo "--- add refusals"
@@ -266,7 +274,7 @@ C=$HOME/custom
 mkdir -p "$C"
 echo '{"claudeAiOauth":{"accessToken":"tokC","refreshToken":"refC"}}' > "$C/.credentials.json"
 echo '{"oauthAccount":{"accountUuid":"aaaaaaaa-0000-0000-0000-000000000000","emailAddress":"a@x"}}' > "$C/.claude.json"
-CLAUDE_CONFIG_DIR=$C run beta
+CLAUDE_CONFIG_DIR=$C run switch beta
 check "the switch works on that folder" '[[ $code == 0 && $(tok "$C/.credentials.json") == tokB && $(jq -r .oauthAccount.emailAddress "$C/.claude.json") == b@x && $(tok "$S/alpha.credentials.json") == tokC ]]'
 check "and leaves the default folder alone" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 echo '{"model":"sonnet"}' > "$C/settings.json"
@@ -285,7 +293,7 @@ run rename beta work
 check "rename the stored account moves record and token" '[[ $code == 0 && -f $S/work.account.json && $(tok "$S/work.credentials.json") == tokB && ! -e $S/beta.account.json && ! -e $S/beta.credentials.json ]]'
 run rename alpha home
 check "rename the active account" '[[ $code == 0 && $("$script") == *"active: home (a@x)"* && $("$script") == *"stored: work (b@x)"* ]]'
-run work
+run switch work
 check "switch under the new names" '[[ $code == 0 && $(active_tok) == tokB && -f $S/home.credentials.json ]]'
 run rename home work
 check "a taken name is refused" '[[ $code == 1 && $out == *"already taken"* && -f $S/home.account.json ]]'
@@ -294,7 +302,9 @@ check "an unknown name is refused" '[[ $code == 1 && $out == *"no stored account
 run rename home ../x
 check "a path as new name is refused" '[[ $code == 1 && -f $S/home.account.json ]]'
 run rename home run
-check "a command word as new name is refused" '[[ $code == 1 && -f $S/home.account.json ]]'
+check "a command word is a fine name, since a name always follows a command" '[[ $code == 0 && -f $S/run.account.json && ! -e $S/home.account.json ]]'
+run switch run
+check "and can be switched to" '[[ $code == 0 && $(active_tok) == tokA && $(rec) == a@x ]]'
 check "no lock left behind" no_locks
 
 echo "--- $fails of $checks checks failed"

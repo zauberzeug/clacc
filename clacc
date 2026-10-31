@@ -44,20 +44,23 @@ main() {
   command -v jq > /dev/null || die "clacc needs jq (https://jqlang.org)"
   mkdir -p "$store"
   case "${1:-}" in
-    "") status ;;
-    add | save) [[ $# -eq 2 ]] || usage; "$1" "$2" ;;
+    "" | status) [[ $# -le 1 ]] || usage; status ;;
+    switch | add | save) [[ $# -eq 2 ]] || usage; "$1" "$2" ;;
     rename) [[ $# -eq 3 ]] || usage; rename_account "$2" "$3" ;;
     run) [[ $# -ge 2 ]] || usage; shift; run_local "$@" ;;
-    -*) usage ;;
-    *) [[ $# -eq 1 ]] || usage; switch "$1" ;;
+    *)
+      # A name alone switches nothing: moving every session takes the explicit command.
+      if [[ $1 != -* && -f $store/$1.account.json ]]; then warn "to move every session to $1: clacc switch $1"; fi
+      usage
+      ;;
   esac
 }
 
 usage() {
   if [[ ${1:-2} != 0 ]]; then exec >&2; fi
   cat << 'EOF'
-clacc                       show the active account and the stored ones
-clacc <name>                switch all sessions, running ones included, to <name>
+clacc [status]              show the active account and the stored ones
+clacc switch <name>         switch all sessions, running ones included, to <name>
 clacc run <name> [args...]  start one session on <name>'s own login, passing args to claude
 clacc add <name>            sign in to another account without touching the active one
 clacc save <name>           store the active login under <name>, e.g. after a manual /login
@@ -314,7 +317,7 @@ stored_names() {
 }
 
 check_name() {
-  [[ $1 =~ ^[a-z0-9][a-z0-9_-]*$ && $1 != add && $1 != save && $1 != rename && $1 != run ]] || die "use a name of lowercase letters, digits, - or _ (not add, save, rename or run)"
+  [[ $1 =~ ^[a-z0-9][a-z0-9_-]*$ ]] || die "use a name of lowercase letters, digits, - or _"
 }
 
 # shellcheck disable=SC2016 # $r is a jq variable

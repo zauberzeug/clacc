@@ -32,6 +32,7 @@ declare -A mutant=(
   [run-signs-in-for-everything]='s#^    -h | --help | -v | --version) return 1 ;;#    -h | --help | -v | --version) return 0 ;;#; s#^    \*) return 1 ;;#    *) return 0 ;;#'
   [run-keeps-double-dash]='/^  if \[\[ \${1:-} == -- \]\]; then shift; fi$/d'
   [shared-settings-lose-permissions]='/^    chmod "\$mode" "\$shared"$/d'
+  [bare-name-switches]='s|^      usage$|      switch "$1"|'
 )
 
 for name in "${!mutant[@]}"; do
