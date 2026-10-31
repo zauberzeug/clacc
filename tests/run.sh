@@ -2,8 +2,8 @@
 # Exercise clacc against a stand-in for claude, in a throwaway HOME with fake tokens.
 # Usage: tests/run.sh   (CLACC=<path> tests another copy of the script)
 # Each check is single-quoted on purpose and check() evaluates it, so shellcheck cannot see that
-# the variables and helpers it uses are used.
-# shellcheck disable=SC2016,SC2034,SC2329
+# the variables and helpers it uses are used (SC2317 in shellcheck 0.9, SC2329 from 0.10 on).
+# shellcheck disable=SC2016,SC2034,SC2317,SC2329
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 script=${CLACC:-$(cd "$here/.." && pwd)/clacc}
