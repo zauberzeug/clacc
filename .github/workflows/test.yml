@@ -1,0 +1,17 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint
+        run: shellcheck clacc tests/*.sh tests/stub/*
+      - name: Test
+        run: tests/run.sh
+      - name: Check that the tests catch each broken safeguard
+        run: tests/mutants.sh

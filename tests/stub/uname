@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Stand-in for uname: answers STUB_UNAME when it is set, else asks the real one.
+if [[ -n ${STUB_UNAME:-} ]]; then
+  echo "$STUB_UNAME"
+  exit 0
+fi
+PATH=${PATH#*:} exec uname "$@"

@@ -1,0 +1,318 @@
+#!/usr/bin/env bash
+# clacc: switch Claude Code accounts, for every running session at once or for one new session.
+# https://github.com/zauberzeug/clacc, MIT license. Run `clacc --help` for the commands.
+#
+# Every session reads its token from ~/.claude/.credentials.json and reloads it when the
+# file changes, so replacing that file switches them all. The account record (email,
+# organisation) sits in ~/.claude.json and is replaced with it. An inactive account's
+# token waits in ~/.clacc/<name>.credentials.json. Each token exists in one place only:
+# a session that refreshes one copy leaves every other copy with a dead refresh token.
+#
+# A `run` session uses ~/.clacc/<name>.local as its config folder (CLAUDE_CONFIG_DIR): a
+# login and a .claude.json of its own, and links to ~/.claude for settings, skills, plugins,
+# projects and memory. It cannot share ~/.claude.json, because a session that starts after
+# the stored profile is a day old writes the account of its own token there.
+set -euo pipefail
+umask 077
+unset CLAUDE_SECURESTORAGE_CONFIG_DIR # it would move the token folder of every claude started here
+
+store=${CLACC_HOME:-$HOME/.clacc}
+# Claude Code's own folder: the default one, or CLAUDE_CONFIG_DIR. Inside a `clacc run` session
+# CLAUDE_CONFIG_DIR is that session's folder, and CLACC_CLAUDE_CONFIG_DIR keeps the caller's.
+global=${CLACC_CLAUDE_CONFIG_DIR-${CLAUDE_CONFIG_DIR-}}
+case $global in "$store"/*) global="" ;; esac
+if [[ -n $global ]]; then
+  claude_dir=$global config=$global/.claude.json
+else
+  claude_dir=$HOME/.claude config=$HOME/.claude.json
+fi
+token=$claude_dir/.credentials.json
+# The lock folders Claude Code takes around a token refresh, a token write and a config write.
+locks=("$claude_dir/.oauth_refresh.lock" "$(realpath -m "$claude_dir").lock" "$claude_dir/.storage-write.lock" "$config.lock")
+# What a `run` session shares with Claude Code's own folder; everything else in its folder is its own.
+shared_dirs=(projects skills agents commands output-styles plugins plans agent-memory todos file-history paste-cache shell-snapshots session-env sessions ide)
+shared_files=(settings.json CLAUDE.md keybindings.json history.jsonl statusline-command.sh)
+held=()
+login_dir=""
+trap cleanup EXIT
+
+main() {
+  if [[ ${1:-} == -h || ${1:-} == --help ]]; then usage 0; fi
+  [[ $(uname -s) == Linux ]] || die "clacc needs Linux, where Claude Code keeps its login in a file (on macOS it is in the Keychain)"
+  command -v jq > /dev/null || die "clacc needs jq (https://jqlang.org)"
+  mkdir -p "$store"
+  case "${1:-}" in
+    "") status ;;
+    add | save) [[ $# -eq 2 ]] || usage; "$1" "$2" ;;
+    rename) [[ $# -eq 3 ]] || usage; rename_account "$2" "$3" ;;
+    run) [[ $# -ge 2 ]] || usage; shift; run_local "$@" ;;
+    -*) usage ;;
+    *) [[ $# -eq 1 ]] || usage; switch "$1" ;;
+  esac
+}
+
+usage() {
+  if [[ ${1:-2} != 0 ]]; then exec >&2; fi
+  cat << 'EOF'
+clacc                     show the active account and the stored ones
+clacc <name>              switch all sessions, running ones included, to <name>
+clacc run <name> [args]   start one session on <name>'s own login; the others keep theirs
+clacc add <name>          sign in to another account without touching the active one
+clacc save <name>         store the active login under <name>, e.g. after a manual /login
+clacc rename <old> <new>  give a stored account another name
+EOF
+  exit "${1:-2}"
+}
+
+status() {
+  local name current dir
+  current=$(active_name)
+  echo "active: ${current:-not stored} ($(active_email))"
+  for name in $(stored_names); do
+    if [[ $name == "$current" ]]; then continue; fi
+    if [[ -f $store/$name.credentials.json ]]; then
+      echo "stored: $name ($(email_of "$name"))"
+    else
+      echo "stored: $name ($(email_of "$name")), no token: clacc add $name"
+    fi
+  done
+  for dir in "$store"/*.local; do
+    if [[ ! -d $dir ]]; then continue; fi
+    name=$(basename "$dir" .local)
+    echo "local:  $name ($(jq -r '.oauthAccount.emailAddress // "no login yet"' "$dir/.claude.json" 2> /dev/null || echo "no login yet")), for single sessions: clacc run $name"
+  done
+}
+
+switch() {
+  local target=$1 current
+  check_name "$target"
+  [[ -f $store/$target.account.json ]] || die "no stored account '$target' (stored: $(stored_names | xargs))"
+  [[ -f $token ]] || die "there is no active login in $token"
+  lock_all
+  current=$(active_name)
+  [[ -n $current ]] || die "the active login ($(active_email)) is not stored; name it first: clacc save <name>"
+  if [[ $current == "$target" ]]; then
+    echo "already on $target ($(active_email))"
+    return
+  fi
+  [[ -f $store/$target.credentials.json ]] || die "no token stored for $target; sign in once: clacc add $target"
+  jq -e .claudeAiOauth.accessToken "$store/$target.credentials.json" > /dev/null || die "the stored token for $target is unreadable"
+  jq_to "$store/$current.account.json" .oauthAccount "$config"
+  ln -f "$token" "$store/$current.credentials.json"  # park the active token under a second name,
+  chmod 600 "$store/$target.credentials.json"        # keep the target's token readable by you only,
+  touch "$store/$target.credentials.json"            # give it a new modification time so every session notices,
+  mv -fT "$store/$target.credentials.json" "$token"  # then put it in the active token's place
+  set_record "$store/$target.account.json"
+  unlock_all
+  echo "switched from $current to $target ($(active_email)); running sessions follow at their next request"
+}
+
+# One session on <name>'s own login. Its first start signs in, in the browser.
+run_local() {
+  local name=$1 dir want
+  local sign_in=(auth login --claudeai)
+  shift
+  check_name "$name"
+  dir=$store/$name.local
+  prepare_local "$dir"
+  export CLACC_CLAUDE_CONFIG_DIR=$global
+  export CLAUDE_CONFIG_DIR=$dir
+  if [[ ${1:-} != auth ]]; then
+    if [[ ! -f $dir/.credentials.json ]]; then
+      [[ -t 0 && -t 1 ]] || die "$name has no login of its own yet; start it once in a terminal to sign in"
+      want=$(jq -r '.emailAddress // empty' "$store/$name.account.json" 2> /dev/null || true)
+      if [[ -n $want ]]; then sign_in+=(--email "$want"); fi
+      echo "First start on $name: sign in once${want:+ as $want} in the browser."
+      claude "${sign_in[@]}" || die "no login happened"
+    fi
+    check_local_account "$name" "$dir"
+  fi
+  exec claude "$@"
+}
+
+# A login of the wrong account or organisation would run every later `run` session on it.
+check_local_account() {
+  local name=$1 dir=$2 verdict
+  local who='"\(.emailAddress) in \(.organizationName // "no organisation")"'
+  # shellcheck disable=SC2016 # $w and $g are jq variables
+  verdict=$(jq -rn --slurpfile w "$store/$name.account.json" --slurpfile g "$dir/.claude.json" '
+    $w[0] as $w | $g[0].oauthAccount as $g
+    | if $g == null then "ok"
+      elif $g.accountUuid != $w.accountUuid then "other"
+      elif $g.organizationUuid and $w.organizationUuid and $g.organizationUuid != $w.organizationUuid then "other"
+      else "ok" end' 2> /dev/null || echo ok)
+  [[ $verdict == ok ]] || die "the own login of $name is $(jq -r ".oauthAccount | $who" "$dir/.claude.json"), not $(jq -r "$who" "$store/$name.account.json"); remove it with: rm $dir/.credentials.json"
+}
+
+prepare_local() {
+  local dir=$1 entry
+  mkdir -p "$dir"
+  if [[ ! -f $dir/.claude.json ]]; then seed_config "$dir"; fi
+  for entry in "${shared_dirs[@]}"; do
+    mkdir -p "$claude_dir/$entry"
+    share "$dir" "$entry"
+  done
+  for entry in "${shared_files[@]}"; do
+    if [[ -e $claude_dir/$entry || -e $dir/$entry ]]; then share "$dir" "$entry"; fi
+  done
+}
+
+# Link <entry> of a run folder to Claude Code's own folder. One that a session made there
+# before Claude Code's folder had it moves over first.
+share() {
+  local dir=$1 entry=$2
+  if [[ -L $dir/$entry ]]; then return 0; fi
+  if [[ -e $dir/$entry ]]; then
+    if [[ ! -e $claude_dir/$entry ]]; then mv -nT "$dir/$entry" "$claude_dir/$entry"; fi
+    if [[ -e $dir/$entry ]]; then
+      warn "$dir/$entry is not shared with $claude_dir/$entry; remove one of the two to share it"
+      return 0
+    fi
+  fi
+  ln -s "$claude_dir/$entry" "$dir/$entry"
+}
+
+# .claude.json without the account record and without what Claude Code keeps per account or
+# organisation: caches, feature flags, consent and plan offers.
+seed_config() {
+  if [[ ! -f $config ]]; then
+    echo '{}' > "$1/.claude.json"
+    return
+  fi
+  jq_to "$1/.claude.json" '
+    del(.oauthAccount)
+    | with_entries(select(.key | test("[Cc]ache|Roster|Eligibility|OrgEnabled|ExtraUsage|^grove|^passes|^claudeAiMcp|^additionalModel|^orgModel|^modelAccess|^clientData|^apiCreditLink|^promoStartup|^replBridge") | not))
+    | if .projects then .projects |= map_values(del(.hasUnseenTeamArtifacts, .loggedAuthoredArtifactPaths)) else . end' "$config"
+}
+
+# The login runs in a config folder of its own, so it never touches the shared .claude.json.
+# cleanup removes that folder however add ends.
+add() {
+  local name=$1 record uuid other
+  check_name "$name"
+  [[ ! -f $store/$name.credentials.json ]] || die "$name is already stored"
+  [[ $name != "$(active_name)" ]] || die "$name is the active login"
+  login_dir=$(mktemp -d "$store/login.XXXXXX")
+  seed_config "$login_dir"
+  echo "Sign in as $name in the browser. Every session keeps its account meanwhile."
+  if ! CLAUDE_CONFIG_DIR=$login_dir claude auth login --claudeai || [[ ! -f $login_dir/.credentials.json ]]; then
+    die "no login happened; nothing changed"
+  fi
+  record=$(jq -c '.oauthAccount // empty' "$login_dir/.claude.json")
+  uuid=$(jq -r '.accountUuid // empty' <<< "$record")
+  [[ -n $uuid ]] || die "the login left no account record; nothing stored"
+  other=$(name_of "$uuid")
+  [[ -z $other || $other == "$name" ]] || die "you signed in as $(jq -r .emailAddress <<< "$record"), which is already stored as $other; nothing stored"
+  [[ ! -f $store/$name.account.json || $(jq -r .accountUuid "$store/$name.account.json") == "$uuid" ]] || die "you signed in as $(jq -r .emailAddress <<< "$record"), but $name is $(email_of "$name"); nothing stored"
+  # shellcheck disable=SC2016 # $r is a jq variable
+  jq_to "$store/$name.account.json" -n --argjson r "$record" '$r'
+  mv -fT "$login_dir/.credentials.json" "$store/$name.credentials.json"
+  echo "stored $name ($(email_of "$name")); every session keeps its account"
+}
+
+save() {
+  local name=$1 uuid other
+  check_name "$name"
+  lock_all
+  uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$config")
+  [[ -n $uuid ]] || die "there is no active login to store"
+  other=$(name_of "$uuid")
+  [[ -z $other || $other == "$name" ]] || die "the active login is already stored as $other"
+  [[ ! -f $store/$name.account.json || $other == "$name" ]] || die "$name is another account; pick another name"
+  jq_to "$store/$name.account.json" .oauthAccount "$config"
+  unlock_all
+  echo "stored the active login ($(active_email)) as $name"
+}
+
+# A name is only a file name: the active account is found by its account id, not by its name.
+rename_account() {
+  local old=$1 new=$2
+  check_name "$old"
+  check_name "$new"
+  [[ -f $store/$old.account.json ]] || die "no stored account '$old' (stored: $(stored_names | xargs))"
+  [[ ! -e $store/$new.account.json && ! -e $store/$new.credentials.json ]] || die "$new is already taken"
+  lock_all
+  mv -T "$store/$old.account.json" "$store/$new.account.json"
+  if [[ -f $store/$old.credentials.json ]]; then mv -T "$store/$old.credentials.json" "$store/$new.credentials.json"; fi
+  unlock_all
+  echo "renamed $old to $new"
+}
+
+# The stored name whose record carries this account id.
+name_of() {
+  local name
+  [[ -n $1 ]] || return 0
+  for name in $(stored_names); do
+    if [[ $(jq -r .accountUuid "$store/$name.account.json") == "$1" ]]; then
+      echo "$name"
+      return 0
+    fi
+  done
+}
+
+active_name() { name_of "$(jq -r '.oauthAccount.accountUuid // empty' "$config")"; }
+active_email() { jq -r '.oauthAccount.emailAddress // "no account record"' "$config"; }
+email_of() { jq -r .emailAddress "$store/$1.account.json"; }
+
+stored_names() {
+  local f
+  for f in "$store"/*.account.json; do
+    if [[ -e $f ]]; then basename "$f" .account.json; fi
+  done
+}
+
+check_name() {
+  [[ $1 =~ ^[a-z0-9][a-z0-9_-]*$ && $1 != add && $1 != save && $1 != rename && $1 != run ]] || die "use a name of lowercase letters, digits, - or _ (not add, save, rename or run)"
+}
+
+# shellcheck disable=SC2016 # $r is a jq variable
+set_record() { jq_to "$config" --slurpfile r "$1" '.oauthAccount = $r[0]' "$config"; }
+
+# Write a jq result atomically: a reader sees the old file or the new one, never half of one.
+jq_to() {
+  local dest=$1
+  shift
+  jq "$@" > "$dest.tmp.$$"
+  mv -fT "$dest.tmp.$$" "$dest"
+}
+
+lock_all() {
+  local lock
+  for lock in "${locks[@]}"; do take_lock "$lock"; done
+}
+
+# mkdir is the lock, as in Claude Code's lock library, which counts a lock untouched for 60 s as stale.
+take_lock() {
+  local lock=$1 tries
+  for ((tries = 0; tries < 100; tries++)); do
+    if mkdir "$lock" 2> /dev/null; then
+      held+=("$lock")
+      return 0
+    fi
+    if (($(date +%s) - $(stat -c %Y "$lock" 2> /dev/null || date +%s) > 60)); then rm -rf "$lock"; fi
+    sleep 0.1
+  done
+  die "$lock is held by another process; try again in a minute"
+}
+
+unlock_all() {
+  local lock
+  for lock in "${held[@]}"; do rmdir "$lock" 2> /dev/null || true; done
+  held=()
+}
+
+# On every exit: release the locks, and remove the login folder of an add, with the refresh lock
+# Claude Code may have made beside it.
+cleanup() {
+  unlock_all
+  if [[ -n $login_dir ]]; then rm -rf "$login_dir" "$login_dir.lock"; fi
+}
+
+warn() { echo "clacc: $*" >&2; }
+
+die() {
+  warn "$@"
+  exit 1
+}
+
+main "$@"

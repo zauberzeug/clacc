@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Stand-in for claude. `claude auth login` signs in as STUB_LOGIN: the active account (a), the
+# stored one (b), the stored one without an organisation recorded yet (b0), the stored one in
+# another organisation (b2), a new one (d), or none (the login fails). It writes where the real
+# one does: the token into the token folder, the account record into the config file. Every
+# call is logged to $HOME/stub.log with the folders it would use.
+dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+cfg=${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}
+cfg=${cfg:-$HOME/.claude.json}
+kind=session
+if [[ ${1:-} == auth ]]; then kind=auth; fi
+echo "$kind config=${CLAUDE_CONFIG_DIR:-unset} secure=${CLAUDE_SECURESTORAGE_CONFIG_DIR:-unset} global=${CLACC_CLAUDE_CONFIG_DIR-unset} args=$*" >> "$HOME/stub.log"
+[[ ${1:-} == auth && ${2:-} == login ]] || exit 0
+case "${STUB_LOGIN:-none}" in
+  a) uuid=aaaaaaaa-0000-0000-0000-000000000000 email=a@x tok=tokA2 ;;
+  b) uuid=bbbbbbbb-0000-0000-0000-000000000000 email=b@x tok=tokB2 org=org-b ;;
+  b0) uuid=bbbbbbbb-0000-0000-0000-000000000000 email=b@x tok=tokB4 ;;
+  b2) uuid=bbbbbbbb-0000-0000-0000-000000000000 email=b@x tok=tokB3 org=org-x ;;
+  d) uuid=dddddddd-0000-0000-0000-000000000000 email=d@x tok=tokD ;;
+  *) exit 1 ;;
+esac
+dir=${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$dir}
+echo "{\"claudeAiOauth\":{\"accessToken\":\"$tok\",\"refreshToken\":\"r$tok\"}}" > "$dir/.credentials.json"
+# shellcheck disable=SC2016 # $u, $e and $o are jq variables
+jq --arg u "$uuid" --arg e "$email" --arg o "${org:-}" \
+  '.oauthAccount = {accountUuid: $u, emailAddress: $e} + (if $o == "" then {} else {organizationUuid: $o, organizationName: $o} end)' \
+  "$cfg" > "$cfg.stub"
+mv "$cfg.stub" "$cfg"
