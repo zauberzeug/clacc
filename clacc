@@ -15,6 +15,10 @@
 # login and a .claude.json of its own, and links to ~/.claude for settings, skills, plugins,
 # projects and memory. It cannot share ~/.claude.json, because a session that starts after
 # the stored profile is a day old writes the account of its own token there.
+#
+# Without a name, switch and run ask Claude Code for the /usage of every stored account and take
+# the one with the most headroom. Claude Code renews an expired token on its own, so clacc never
+# reads a token value to compare accounts.
 set -euo pipefail
 umask 077
 unset CLAUDE_SECURESTORAGE_CONFIG_DIR # it would move the token folder of every claude started here
@@ -30,6 +34,8 @@ else
   claude_dir=$HOME/.claude config=$HOME/.claude.json
 fi
 token=$claude_dir/.credentials.json
+# Held while a parked token is lent out to read its usage: a switch must not move it meanwhile.
+lent_lock=$store/.lent.lock
 # What a `run` session shares with Claude Code's own folder; everything else in its folder is its own.
 shared_dirs=(projects skills agents commands output-styles plugins plans agent-memory todos file-history paste-cache shell-snapshots session-env sessions ide)
 shared_files=(CLAUDE.md keybindings.json history.jsonl statusline-command.sh)
@@ -37,6 +43,8 @@ shared_files=(CLAUDE.md keybindings.json history.jsonl statusline-command.sh)
 own_settings='["model"]'
 held=()
 login_dir=""
+lent=""
+picked=""
 keychain_user="" # set on macOS, where the logins are in the Keychain
 
 main() {
@@ -51,9 +59,14 @@ main() {
   mkdir -p "$store"
   case "${1:-}" in
     "" | status) [[ $# -le 1 ]] || usage; status ;;
-    switch | add | save) [[ $# -eq 2 ]] || usage; "$1" "$2" ;;
+    switch)
+      [[ $# -le 2 ]] || usage
+      if [[ $# -eq 2 ]]; then picked=$2; else pick_account switch; fi
+      switch "$picked"
+      ;;
+    add | save) [[ $# -eq 2 ]] || usage; "$1" "$2" ;;
     rename) [[ $# -eq 3 ]] || usage; rename_account "$2" "$3" ;;
-    run) [[ $# -ge 2 ]] || usage; shift; run_local "$@" ;;
+    run) shift; run_local "$@" ;;
     *)
       # A name alone switches nothing: moving every session takes the explicit command.
       if [[ $1 != -* && -f $store/$1.account.json ]]; then warn "to move every session to $1: clacc switch $1"; fi
@@ -66,11 +79,14 @@ usage() {
   if [[ ${1:-2} != 0 ]]; then exec >&2; fi
   cat << 'EOF'
 clacc [status]              show the active account and the stored ones
-clacc switch <name>         switch all sessions, running ones included, to <name>
-clacc run <name> [args...]  start one session on <name>'s own login, passing args to claude
+clacc switch [name]         switch all sessions, running ones included, to [name]
+clacc run [name] [args...]  start one session on [name]'s own login, passing args to claude
 clacc add <name>            sign in to another account without touching the active one
 clacc save <name>           store the active login under <name>, e.g. after a manual /login
 clacc rename <old> <new>    give a stored account another name
+
+Without a name, switch and run take the account with the most headroom. A first word after
+run that is not an option is a name, so a prompt needs a leading --: clacc run -- "fix it"
 EOF
   exit "${1:-2}"
 }
@@ -130,12 +146,18 @@ swap_tokens() {
   mv -f "$store/$target.credentials.json" "$token"  # then put it in the active token's place
 }
 
-# One session on <name>'s own login, with the remaining arguments passed to claude. The first
-# session start signs in, in the browser.
+# One session on an account's own login, with the remaining arguments passed to claude: the account
+# named first, or else the one with the most headroom. The first session start signs in, in the browser.
 run_local() {
-  local name=$1 dir want
+  local name=${1:-} dir want
   local sign_in=(auth login --claudeai)
-  shift
+  case $name in
+    "" | -*)
+      pick_account run
+      name=$picked
+      ;;
+    *) shift ;;
+  esac
   if [[ ${1:-} == -- ]]; then shift; fi
   check_name "$name"
   dir=$store/$name.local
@@ -151,6 +173,77 @@ run_local() {
   fi
   if [[ ${1:-} != auth ]]; then check_local_account "$name" "$dir"; fi
   exec claude "$@"
+}
+
+# Put the stored account with the most headroom into $picked. What it compares goes to stderr,
+# since in a `run` stdout is claude's. A tie stays on the active account, so a tie moves nobody.
+# A `switch` needs the active or a parked login; a `run` also takes the own login of a run folder.
+pick_account() {
+  local command=$1 name current parked own usage_text summary left detail best=-1
+  current=$(active_name)
+  if [[ -z $current ]]; then echo "the active login ($(active_email)) is not stored, so not compared: clacc save <name>" >&2; fi
+  for name in $(stored_names); do
+    parked=$store/$name.credentials.json own=$store/$name.local/.credentials.json
+    if [[ $name == "$current" ]]; then
+      usage_text=$(claude_usage "$global")
+    elif has_token "$own" && { [[ $command == run ]] || has_token "$parked"; }; then
+      usage_text=$(claude_usage "$store/$name.local")
+    elif has_token "$parked"; then
+      read_parked "$name"
+    else
+      echo "$name: no token, not compared: clacc add $name" >&2
+      continue
+    fi
+    if summary=$(headroom "$usage_text"); then
+      read -r left detail <<< "$summary"
+      echo "$name: $left% left $detail" >&2
+      if ((left > best)) || { ((left == best)) && [[ $name == "$current" ]]; }; then
+        best=$left picked=$name
+      fi
+    else
+      echo "$name: could not read its usage, not compared" >&2
+    fi
+  done
+  [[ -n $picked ]] || die "could not read the usage of any account; name one: clacc $command <name>"
+  ((best > 0)) || die "no account has headroom left; name one: clacc $command <name>"
+  echo "most headroom: $picked" >&2
+}
+
+# A parked token waits outside any config folder, so a reading lends it one, where Claude Code may
+# renew it. The lock keeps a switch from moving it meanwhile. close_login_dir brings it back.
+read_parked() {
+  take_lock "$lent_lock"
+  lent=$1
+  login_dir=$(mktemp -d "$store/login.XXXXXX")
+  seed_config "$login_dir"
+  move_token "$store/$lent.credentials.json" "$login_dir/.credentials.json"
+  usage_text=$(claude_usage "$login_dir")
+  close_login_dir
+  unlock_all
+}
+
+# The /usage text from Claude Code in a config folder ("" is its default one), run from the store,
+# away from any project. /usage is a local command here and sends no prompt; the cheap model only
+# matters should a later version send it after all.
+claude_usage() {
+  (
+    cd "$store"
+    if [[ -n $1 ]]; then export CLAUDE_CONFIG_DIR=$1; else unset CLAUDE_CONFIG_DIR; fi
+    claude -p /usage --safe-mode --no-session-persistence --model haiku < /dev/null 2> /dev/null || true
+  )
+}
+
+# "<percent left> (<what is used>)" from a /usage text: the tighter of the five-hour and the weekly
+# limit. A limit on a single model does not count, and a text with neither limit fails.
+headroom() {
+  local hours week tightest
+  hours=$(sed -n 's/^Current session: \([0-9]*\)% used.*/\1/p' <<< "$1")
+  week=$(sed -n 's/^Current week (all models): \([0-9]*\)% used.*/\1/p' <<< "$1")
+  [[ -n $hours$week ]] || return 1
+  tightest=${hours:-0}
+  if ((${week:-0} > tightest)); then tightest=$week; fi
+  if ((tightest > 100)); then tightest=100; fi
+  echo "$((100 - tightest)) (five hours ${hours:-?}% used, week ${week:-?}% used)"
 }
 
 # Whether claude arguments start a session: none at all, or options such as -c or --model.
@@ -350,11 +443,12 @@ jq_to() {
   mv -f "$dest.tmp.$$" "$dest"
 }
 
-# The lock folders Claude Code takes around a token refresh, a token write and a config write.
+# The lock of a reading first, then the ones Claude Code takes around a token refresh, a token write
+# and a config write.
 lock_all() {
   local lock real
   real=$(cd -P "$claude_dir" 2> /dev/null && pwd -P) || real=$claude_dir
-  for lock in "$claude_dir/.oauth_refresh.lock" "$real.lock" "$claude_dir/.storage-write.lock" "$config.lock"; do take_lock "$lock"; done
+  for lock in "$lent_lock" "$claude_dir/.oauth_refresh.lock" "$real.lock" "$claude_dir/.storage-write.lock" "$config.lock"; do take_lock "$lock"; done
 }
 
 # mkdir is the lock, as in Claude Code's lock library, which counts a lock untouched for 60 s as stale.
@@ -377,12 +471,21 @@ unlock_all() {
   held=()
 }
 
-# On every exit: release the locks, and remove the login folder of an add, with the refresh lock
-# Claude Code may have made beside it.
+# On every exit: close a login folder, then release the locks.
 cleanup() {
+  close_login_dir
   unlock_all
-  if [[ -n $login_dir && -n $keychain_user ]]; then keychain_delete "$login_dir/.credentials.json" || true; fi
-  if [[ -n $login_dir ]]; then rm -rf "$login_dir" "$login_dir.lock"; fi
+}
+
+# Remove the login folder of an add or a reading, with the refresh lock Claude Code may have made
+# beside it. A lent token goes back first, however the reading ended: Claude Code may have renewed
+# it, which can retire the refresh token it came with.
+close_login_dir() {
+  if [[ -z $login_dir ]]; then return 0; fi
+  if [[ -n $lent ]] && has_token "$login_dir/.credentials.json"; then move_token "$login_dir/.credentials.json" "$store/$lent.credentials.json"; fi
+  if [[ -n $keychain_user ]]; then keychain_delete "$login_dir/.credentials.json" || true; fi
+  rm -rf "$login_dir" "$login_dir.lock"
+  login_dir="" lent=""
 }
 
 # GNU stat first: BSD stat refuses -c, while GNU stat reads -f as something else.

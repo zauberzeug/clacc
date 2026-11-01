@@ -56,7 +56,11 @@ mtime() { stat -c %Y "$1" 2> /dev/null || stat -f %m "$1"; }
 last_log() { tail -n 1 "$HOME/stub.log"; }
 # What a plain /login leaves behind: the account record of an account clacc may not know yet.
 manual_login() { jq '.oauthAccount = {accountUuid: "cccccccc-0000-0000-0000-000000000000", emailAddress: "c@x"}' "$HOME/.claude.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude.json"; }
-no_locks() { [[ ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.lock && ! -e $HOME/.claude/.storage-write.lock && ! -e $HOME/.claude.json.lock ]]; }
+# A login whose access token has run out, with a field that must survive the renewal.
+expired() { jq '.claudeAiOauth += {expiresAt: 1000, subscriptionType: "team"}' "$1" > "$HOME/x" && mv "$HOME/x" "$1"; }
+field() { jq -r ".claudeAiOauth.$2" "$1"; }
+readings() { grep "^usage" "$HOME/stub.log"; }
+no_locks() { [[ ! -e $S/.lent.lock && ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.lock && ! -e $HOME/.claude/.storage-write.lock && ! -e $HOME/.claude.json.lock ]]; }
 run() { out=$("$script" "$@" 2>&1); code=$?; }
 # Run in a pseudo-terminal, as from a person's terminal.
 run_tty() {
@@ -79,16 +83,16 @@ run status extra
 check "status takes no argument" '[[ $code == 2 ]]'
 run beta
 check "a name alone switches nothing and names the command that does" '[[ $code == 2 && $out == *"clacc switch beta"* && $(active_tok) == tokA && $(rec) == a@x ]]'
-run switch
-check "switch without a name: usage, nothing switched" '[[ $code == 2 && $(active_tok) == tokA ]]'
+run switch beta extra
+check "switch with two names: usage, nothing switched" '[[ $code == 2 && $(active_tok) == tokA ]]'
 run --help
-check "--help prints the commands and exits 0" '[[ $code == 0 && $out == *"clacc switch <name>"* && $out == *"clacc run <name> [args...]"*"passing args to claude"* ]]'
+check "--help prints the commands and exits 0" '[[ $code == 0 && $out == *"clacc switch [name]"* && $out == *"clacc run [name] [args...]"*"passing args to claude"* && $out == *"most headroom"* ]]'
 run --bogus
 check "a wrong option prints the commands and exits 2" '[[ $code == 2 && $out == *"clacc add <name>"* ]]'
 STUB_UNAME=FreeBSD run
 check "anything but Linux and macOS is refused" '[[ $code == 1 && $out == *"needs Linux or macOS"* ]]'
 STUB_UNAME=FreeBSD run --help
-check "--help works on anything else too" '[[ $code == 0 && $out == *"clacc switch <name>"* ]]'
+check "--help works on anything else too" '[[ $code == 0 && $out == *"clacc switch [name]"* ]]'
 
 echo "--- switch alpha -> beta"
 run switch beta
@@ -311,11 +315,108 @@ STUB_LOGIN=none run_tty run gamma
 check "no login in the browser: no session" '[[ $code == 1 && $out == *"no login happened"* && $(grep -c "^session" "$HOME/stub.log") == 0 ]]'
 run run ../x
 check "a path as name refused" '[[ $code == 1 && ! -e $S/../x.local ]]'
-run run
-check "run without a name: usage" '[[ $code == 2 ]]'
 STUB_LOGIN=d run_tty run delta
 check "a name with no stored account takes any login" '[[ $code == 0 && $(last_log) == "session config=$S/delta.local secure=unset global= args=" ]]'
 check "the global login untouched by all of it" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
+
+echo "--- switch without a name: the account with the most headroom"
+setup
+STUB_USAGE="tokA=50,10 tokB=20,30" run switch
+check "moves every session to the account with the most left" '[[ $code == 0 && $(active_tok) == tokB && $(rec) == b@x && $(tok "$S/alpha.credentials.json") == tokA ]]'
+check "and says what it compared, a limit on one model not counting" '[[ $out == *"alpha: 50% left (five hours 50% used, week 10% used)"* && $out == *"beta: 70% left (five hours 20% used, week 30% used)"* && $out == *"most headroom: beta"* && $out == *"switched from alpha to beta"* ]]'
+setup
+STUB_USAGE="tokA=50,10 tokB=0,100" run switch
+check "the tighter limit counts: a used-up week with a free five-hour limit leaves nothing" '[[ $code == 0 && $out == *"beta: 0% left (five hours 0% used, week 100% used)"* && $out == *"already on alpha"* && $(active_tok) == tokA ]]'
+STUB_USAGE="tokA=50,10 tokB=90,10" run switch
+check "and so does a nearly used five-hour limit" '[[ $code == 0 && $out == *"beta: 10% left"* && $out == *"already on alpha"* && $(active_tok) == tokA ]]'
+run switch beta
+STUB_USAGE="tokA=40,10 tokB=40,10" run switch
+check "a tie stays on the active account" '[[ $code == 0 && $out == *"already on beta"* && $(active_tok) == tokB ]]'
+STUB_USAGE="tokA=104,10 tokB=100,100" run switch
+check "a limit past its end counts as nothing left, and with nothing left anywhere nobody moves" '[[ $code == 1 && $out == *"alpha: 0% left (five hours 104% used"* && $out == *"no account has headroom left; name one: clacc switch <name>"* && $(active_tok) == tokB ]]'
+STUB_USAGE="tokA=0,100" run switch
+check "so an active login that cannot be read moves nobody to a used-up account" '[[ $code == 1 && $out == *"beta: could not read its usage"* && $out == *"no account has headroom left"* && $(active_tok) == tokB ]]'
+
+echo "--- switch without a name: what it leaves out"
+setup
+echo '{"accountUuid":"cccccccc-0000-0000-0000-000000000000","emailAddress":"c@x"}' > "$S/gamma.account.json"
+STUB_USAGE="tokA=50,10 tokB=90,10" run switch
+check "an account without a token is named and left out" '[[ $code == 0 && $out == *"gamma: no token, not compared: clacc add gamma"* && $out == *"already on alpha"* ]]'
+STUB_USAGE="tokA=90,10" run switch
+check "so is one whose usage cannot be read" '[[ $code == 0 && $out == *"beta: could not read its usage"* && $out == *"already on alpha"* ]]'
+STUB_USAGE="tokA=-,- tokB=90,90" run switch
+check "and one whose text names no limit" '[[ $code == 0 && $out == *"alpha: could not read its usage"* && $out == *"most headroom: beta"* && $(active_tok) == tokB ]]'
+setup
+STUB_USAGE="tokA=-,20 tokB=90,10" run switch
+check "one limit alone still counts" '[[ $code == 0 && $out == *"alpha: 80% left (five hours ?% used, week 20% used)"* && $out == *"already on alpha"* ]]'
+run switch
+check "no reading at all: nothing switched, it asks for a name" '[[ $code == 1 && $out == *"name one: clacc switch <name>"* && $(active_tok) == tokA && $(rec) == a@x ]]'
+manual_login
+STUB_USAGE="tokB=20,30" run switch
+check "an active login that is not stored is named, and the switch refuses as before" '[[ $code == 1 && $out == *"the active login (c@x) is not stored"* && $(active_tok) == tokA ]]'
+check "no lock left behind" no_locks
+
+echo "--- how an account is read"
+setup
+STUB_USAGE="tokA=10,10 tokB=50,50" run switch
+check "the active login in Claude Code's own folder, from the store, as a local command without a saved session" '[[ $(readings | head -n 1) == "usage config=unset cwd=$S lent-lock=free args=-p /usage --safe-mode --no-session-persistence --model haiku" ]]'
+check "a parked one in a folder of its own, under the lock" '[[ $(readings | tail -n 1) == "usage config=$S/login."*" cwd=$S lent-lock=held args=-p /usage"* ]]'
+check "that folder goes, and the token is back in its place" '[[ -z $(find "$S" -name "login.*") && $(tok "$S/beta.credentials.json") == tokB && $(links "$S/beta.credentials.json") == 1 ]] && no_locks'
+check "reading starts no session" '[[ $(grep -c "^session" "$HOME/stub.log") == 0 ]]'
+setup
+CLAUDE_CONFIG_DIR=$S/beta.local STUB_USAGE="tokA=10,10 tokB=50,50" run switch
+check "inside a run session the active login is still read in the default folder" '[[ $(readings | head -n 1) == "usage config=unset "* ]]'
+
+echo "--- a parked token that Claude Code renews while it reads"
+setup
+expired "$S/beta.credentials.json"
+STUB_USAGE="tokA=10,10 new-refB=50,50" run switch
+check "comes back under its parked name, its other fields kept" '[[ $code == 0 && $out == *"beta: 50% left"* && $(field "$S/beta.credentials.json" accessToken) == new-refB && $(field "$S/beta.credentials.json" refreshToken) == next-refB && $(field "$S/beta.credentials.json" subscriptionType) == team ]]'
+check "readable by you only, one link, nothing left behind" '[[ "$(mode "$S/beta.credentials.json") $(links "$S/beta.credentials.json")" == "600 1" && -z $(find "$S" -name "login.*") ]] && no_locks'
+STUB_USAGE="new-refB=20,20 tokA=50,50" run switch
+check "and a switch to it carries the renewed token" '[[ $code == 0 && $(active_tok) == new-refB && ! -e $S/beta.credentials.json ]]'
+setup
+expired "$S/beta.credentials.json"
+STUB_KILL=$script STUB_USAGE="tokA=10,10 new-refB=50,50" run switch
+check "it comes back even when clacc is stopped right after the renewal" '[[ $code != 0 && $(field "$S/beta.credentials.json" accessToken) == new-refB && -z $(find "$S" -name "login.*") ]] && no_locks'
+
+echo "--- a switch while a parked token is being read"
+setup
+mkdir "$S/.lent.lock"
+(
+  sleep 1
+  touch "$HOME/reading-over"
+  rmdir "$S/.lent.lock"
+) &
+run switch beta
+waited=no
+if [[ -e $HOME/reading-over ]]; then waited=yes; fi
+wait
+check "waits until the reading is over" '[[ $code == 0 && $waited == yes && $(active_tok) == tokB ]]'
+
+echo "--- run without a name"
+setup
+L=$S/beta.local
+STUB_LOGIN=b STUB_USAGE="tokA=50,10 tokB=20,30" run_tty run
+check "a session on the account with the most left, signed in on its first start" '[[ $code == 0 && $out == *"most headroom: beta"* && $(last_log) == "session config=$L secure=unset global= args=" && $(grep -c "^auth" "$HOME/stub.log") == 1 ]]'
+check "the global login stays" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
+STUB_USAGE="tokA=50,10 tokB2=20,30" run run -c
+check "from then on it is read through its own login, and options go to claude" '[[ $code == 0 && $(readings | tail -n 1) == "usage config=$L "* && $(last_log) == "session config=$L secure=unset global= args=-c" ]]'
+STUB_USAGE="tokA=50,10 tokB2=20,30" run run -- "fix the tests"
+check "a prompt after -- goes to claude, without the --" '[[ $code == 0 && $(last_log) == "session config=$L secure=unset global= args=fix the tests" ]]'
+quiet=$(STUB_USAGE="tokA=50,10 tokB2=20,30" "$script" run --version 2> /dev/null)
+check "what it compares stays off stdout, which is claude's" '[[ -z $quiet ]]'
+sessions=$(grep -c "^session" "$HOME/stub.log")
+run run
+check "no reading at all: no session, it asks for a name" '[[ $code == 1 && $out == *"name one: clacc run <name>"* && $(grep -c "^session" "$HOME/stub.log") == "$sessions" ]]'
+rm "$S/beta.credentials.json"
+STUB_USAGE="tokA=50,10 tokB2=20,30" run run -c
+check "the own login of a run folder is enough for a run" '[[ $code == 0 && $out == *"most headroom: beta"* && $(last_log) == "session config=$L secure=unset global= args=-c" ]]'
+STUB_USAGE="tokA=50,10 tokB2=20,30" run switch
+check "but not for a switch, which needs a parked token" '[[ $code == 0 && $out == *"beta: no token, not compared"* && $(active_tok) == tokA ]]'
+manual_login
+STUB_USAGE="tokB2=20,30" run run -c
+check "an active login that is not stored is named and left out" '[[ $code == 0 && $out == *"the active login (c@x) is not stored"* && $out == *"most headroom: beta"* ]]'
 
 echo "--- Claude Code in another folder (CLAUDE_CONFIG_DIR)"
 setup
@@ -335,6 +436,9 @@ CLAUDE_CONFIG_DIR=$S/beta.local CLACC_CLAUDE_CONFIG_DIR='' run
 check "and a session from the default folder sees the default one" '[[ $out == *"active: alpha (a@x)"* ]]'
 CLAUDE_CONFIG_DIR=$S/beta.local run
 check "a run folder alone in CLAUDE_CONFIG_DIR, as in a spawned helper, means the default one" '[[ $out == *"active: alpha (a@x)"* ]]'
+: > "$HOME/stub.log"
+CLAUDE_CONFIG_DIR=$C STUB_USAGE="tokB=10,10" run switch
+check "without a name the active login is read in that folder too" '[[ $(readings | tail -n 1) == "usage config=$C "* ]]'
 
 echo "--- a config folder reached through a link"
 setup
@@ -472,6 +576,20 @@ put_item "$(folder "$C")" '{"claudeAiOauth":{"accessToken":"tokC"}}'
 CLAUDE_CONFIG_DIR=$C run switch beta
 check "the switch works on that folder's item" '[[ $code == 0 && $(item_tok "$(folder "$C")") == tokB && $(item_tok "$(stored alpha)") == tokC ]]'
 check "and leaves the default item alone" '[[ $(item_tok "$active") == tokA && $(rec) == a@x ]]'
+
+echo "--- macOS: without a name"
+lent_items() { security dump-keychain | grep -c "Claude Code-credentials-"; }
+setup_keychain
+STUB_USAGE="tokA=50,10 tokB=20,30" run switch
+check "reads every login where it is and moves every session to the most left" '[[ $code == 0 && $out == *"alpha: 50% left"* && $out == *"beta: 70% left"* && $(item_tok "$active") == tokB && $(item_tok "$(stored alpha)") == tokA ]]'
+check "the item lent to a reading is gone, and no token is in a file" '[[ $(lent_items) == 0 ]] && no_token_files'
+setup_keychain
+put_item "$(stored beta)" '{"claudeAiOauth":{"accessToken":"tokB","refreshToken":"refB","expiresAt":1000}}'
+STUB_USAGE="tokA=10,10 new-refB=50,50" run switch
+check "a token renewed while it was lent comes back to the stored item" '[[ $code == 0 && $out == *"beta: 50% left"* && $(item_tok "$(stored beta)") == new-refB && $(lent_items) == 0 ]]'
+put_item "$(stored beta)" '{"claudeAiOauth":{"accessToken":"tokB","refreshToken":"refB","expiresAt":1000}}'
+STUB_KILL=$script STUB_USAGE="tokA=10,10 new-refB=50,50" run switch
+check "also when clacc is stopped right after the renewal" '[[ $code != 0 && $(item_tok "$(stored beta)") == new-refB && $(lent_items) == 0 ]] && no_locks'
 export STUB_UNAME=Linux
 
 echo "--- install.sh"
@@ -480,7 +598,7 @@ installed=$HOME/.local/bin/clacc
 # On bash's standard input, as in the line in the README.
 install_clacc() { out=$(bash < "$installer" 2>&1); code=$?; }
 STUB_CURL_FILE=$script install_clacc
-check "a fresh machine gets a clacc that runs" '[[ $code == 0 && $("$installed" --help) == *"clacc switch <name>"* ]]'
+check "a fresh machine gets a clacc that runs" '[[ $code == 0 && $("$installed" --help) == *"clacc switch [name]"* ]]'
 check "from the raw file, not from the GitHub page of it" '[[ $(last_log) == "curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/clacc -o "* ]]'
 check "a folder not on the PATH is named" '[[ $out == *"add $HOME/.local/bin to your PATH"* ]]'
 PATH=$HOME/.local/bin:$PATH STUB_CURL_FILE=$script install_clacc
@@ -496,7 +614,7 @@ rm "$HOME/stub.log"
 out=$(sed '/^  mv -f/q' "$installer" | bash 2>&1)
 check "an installer cut off on its way here does nothing" '[[ ! -e $HOME/stub.log && $(cat "$installed") == old ]]'
 STUB_CURL_FILE=$script install_clacc
-check "installing again updates it" '[[ $code == 0 && $("$installed" --help) == *"clacc switch <name>"* ]]'
+check "installing again updates it" '[[ $code == 0 && $("$installed" --help) == *"clacc switch [name]"* ]]'
 
 echo "--- $fails of $checks checks failed"
 exit $((fails > 0))

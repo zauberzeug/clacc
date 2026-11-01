@@ -5,9 +5,70 @@
 # one does: the token into the token folder, or on macOS into the Keychain item of the config
 # folder, and the account record into the config file. Every call is logged to $HOME/stub.log
 # with the folders it would use.
+#
+# `claude -p /usage` prints the /usage text for the login of its folder, from STUB_USAGE: "tokA=50,10"
+# means 50% of the five-hour limit and 10% of the week are used, and "-" that a limit is not shown.
+# Any other token is not logged in. An expired token is renewed first, as the real one does it: new
+# tokens in a new file. STUB_KILL, the path of the script under test, then stops the clacc that called
+# it: the outermost of the unbroken chain of its parents running that script.
 dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 cfg=${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}
 cfg=${cfg:-$HOME/.claude.json}
+keychain_item() { echo "Claude Code-credentials${CLAUDE_CONFIG_DIR:+-$(printf %s "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)}"; }
+read_login() {
+  if [[ $(uname -s) == Darwin ]]; then
+    security find-generic-password -a "$USER" -s "$(keychain_item)" -w 2> /dev/null
+  else
+    cat "$dir/.credentials.json" 2> /dev/null
+  fi
+}
+write_login() {
+  if [[ $(uname -s) == Darwin ]]; then
+    security add-generic-password -U -a "$USER" -s "$(keychain_item)" -w "$1"
+  else
+    echo "$1" > "$dir/.credentials.json.stub"
+    mv "$dir/.credentials.json.stub" "$dir/.credentials.json"
+  fi
+}
+stop_clacc() {
+  local pid=$PPID top=""
+  while ((pid > 1)); do
+    if [[ $(ps -o args= -p "$pid") == *"$STUB_KILL "* ]]; then
+      top=$pid
+    elif [[ -n $top ]]; then
+      break
+    fi
+    pid=$(ps -o ppid= -p "$pid" | tr -d ' ')
+  done
+  if [[ -n $top ]]; then kill -TERM "$top"; fi
+}
+if [[ ${1:-} == -p && ${2:-} == /usage ]]; then
+  lock=free
+  if [[ -d $HOME/.clacc/.lent.lock ]]; then lock=held; fi
+  echo "usage config=${CLAUDE_CONFIG_DIR:-unset} cwd=$PWD lent-lock=$lock args=$*" >> "$HOME/stub.log"
+  login=$(read_login)
+  if jq -e '.claudeAiOauth.expiresAt == 1000' <<< "$login" > /dev/null 2>&1; then
+    login=$(jq -c '.claudeAiOauth |= . + {accessToken: ("new-" + .refreshToken), refreshToken: ("next-" + .refreshToken), expiresAt: 99999999999999}' <<< "$login")
+    write_login "$login"
+    if [[ -n ${STUB_KILL:-} ]]; then stop_clacc; fi
+  fi
+  tok=$(jq -r .claudeAiOauth.accessToken <<< "$login" 2> /dev/null)
+  for pair in ${STUB_USAGE:-}; do
+    if [[ ${pair%%=*} == "$tok" ]]; then
+      used=${pair#*=}
+      echo "You are currently using your subscription to power your Claude Code usage"
+      echo
+      if [[ ${used%,*} != - ]]; then echo "Current session: ${used%,*}% used · resets Nov 1, 9:50am (Europe/Berlin)"; fi
+      if [[ ${used#*,} != - ]]; then echo "Current week (all models): ${used#*,}% used · resets Nov 4, 7am (Europe/Berlin)"; fi
+      echo "Current week (Fable): 97% used · resets Nov 4, 7am (Europe/Berlin)"
+      echo
+      echo "What's contributing to your usage?"
+      exit 0
+    fi
+  done
+  echo "Not logged in · Please run /login"
+  exit 1
+fi
 kind=session
 if [[ ${1:-} == auth ]]; then kind=auth; fi
 echo "$kind config=${CLAUDE_CONFIG_DIR:-unset} secure=${CLAUDE_SECURESTORAGE_CONFIG_DIR:-unset} global=${CLACC_CLAUDE_CONFIG_DIR-unset} args=$*" >> "$HOME/stub.log"
@@ -21,13 +82,7 @@ case "${STUB_LOGIN:-none}" in
   *) exit 1 ;;
 esac
 dir=${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$dir}
-login="{\"claudeAiOauth\":{\"accessToken\":\"$tok\",\"refreshToken\":\"r$tok\"}}"
-if [[ $(uname -s) == Darwin ]]; then
-  service="Claude Code-credentials${CLAUDE_CONFIG_DIR:+-$(printf %s "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)}"
-  security add-generic-password -U -a "$USER" -s "$service" -w "$login"
-else
-  echo "$login" > "$dir/.credentials.json"
-fi
+write_login "{\"claudeAiOauth\":{\"accessToken\":\"$tok\",\"refreshToken\":\"r$tok\"}}"
 # shellcheck disable=SC2016 # $u, $e and $o are jq variables
 jq --arg u "$uuid" --arg e "$email" --arg o "${org:-}" \
   '.oauthAccount = {accountUuid: $u, emailAddress: $e} + (if $o == "" then {} else {organizationUuid: $o, organizationName: $o} end)' \

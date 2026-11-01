@@ -14,12 +14,19 @@ $ clacc switch work
 switched from personal to work (me@company.com); running sessions follow at their next request
 
 $ clacc run personal
+
+$ clacc switch
+personal: 23% left (five hours 77% used, week 40% used)
+work: 88% left (five hours 12% used, week 9% used)
+most headroom: work
+already on work (me@company.com)
 ```
 
 `clacc switch work` moves every Claude Code session on the machine to the work account, the
 running ones included, with no restart and no new login. `clacc run personal` starts one more
-session on the personal account, and all the others stay where they are. A name alone switches
-nothing, so a slip of the keyboard cannot move every session.
+session on the personal account, and all the others stay where they are. Leave the name out and
+clacc takes the account with the most headroom. A name alone, without a command, switches nothing,
+so a slip of the keyboard cannot move every session.
 
 ## Why
 
@@ -47,8 +54,12 @@ clacc save personal      # name the login you have now
 clacc add work           # sign in to another account in the browser; nothing else changes
 clacc switch work        # move every session to work
 clacc switch personal    # and back
+clacc switch             # move every session to the account with the most headroom
 clacc run work           # one new session on work's own login; its first start signs in
 clacc run work -c        # everything after the name goes to claude, a leading -- dropped
+clacc run                # one new session on the account with the most headroom
+clacc run -c             # the same, with options for claude
+clacc run -- "fix it"    # and with a prompt, which would otherwise be read as a name
 clacc rename work acme   # give a stored account another name
 clacc                    # show the active account, the stored ones and the local ones
 ```
@@ -87,19 +98,34 @@ Accounts offer different models, so a model picked with `/model` in a `run` sess
 account's default. Any other setting such a session changes goes back to your own settings at the
 next start.
 
+**The most headroom.** Without a name, clacc runs `claude -p /usage` with each stored account's
+login and takes the account with the most left on the tighter of its five-hour and weekly limits.
+That command is local: it sends no prompt and uses none of your limits, and it takes a few seconds
+per account. Limits on a single model do not count, a tie stays on the active account, and an
+account it cannot read is named and left out. With nothing left on any account, clacc says so and
+moves nothing. A `switch` compares the accounts it can switch to, and a `run` also those with nothing
+but the login of their own folder.
+
 **Care with tokens.** When Claude Code refreshes a token, the server can hand out a new refresh
 token and retire the old one, so a copy of a login can stop working at the next refresh. clacc
 never keeps a copy of a login: each one lives in exactly one file readable by you only, or on macOS
 in one Keychain item. The Keychain has no atomic rename, so there clacc removes the old item only
 once the new one reads back correctly. A token too long for the standard input of `security`, as a
 login with MCP sign-ins often is, goes on its command line, where other processes on the machine
-can read it for a moment.
+can read it for a moment. To read a parked account, clacc lends its token to a temporary config
+folder, where Claude Code renews it if it has expired, and takes it back afterwards, however the
+reading ends. A switch waits meanwhile.
 
 ## Good to know
 
-- clacc relies on how Claude Code stores and reloads its login. That is not a documented
-  interface, and an update can change it. clacc was written against Claude Code 2.1.316, and its
-  macOS part against 2.1.303. After an update, run the tests and one switch.
+- clacc relies on how Claude Code stores and reloads its login, and on the wording of `/usage`.
+  Neither is a documented interface, and an update can change them. clacc was written against
+  Claude Code 2.1.316, and its macOS part against 2.1.303. After an update, run the tests and one
+  switch. Should the wording change, clacc says it cannot read the usage, and you name the account
+  yourself.
+- Picking an account by headroom has run on real accounts only on Linux so far, with 2.1.316.
+- Headroom is a percentage of each account's own limits, because that is all `/usage` shows. 20% of
+  a large plan can be more usage than 30% of a small one, and clacc does not weigh that.
 - Prompt cache, artifacts and remote sessions belong to an account. After a switch, a session's
   first request cannot reuse the previous account's cache, and pages published from the other
   account are out of sight.
