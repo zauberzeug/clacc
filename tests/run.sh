@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # Exercise clacc against a stand-in for claude, in a throwaway HOME with fake tokens.
-# Usage: tests/run.sh   (CLACC=<path> tests another copy of the script)
+# Usage: tests/run.sh   (CLACC=<path> tests another copy of the script, CLACC_INSTALLER=<path> of install.sh)
 # Each check is single-quoted on purpose and check() evaluates it, so shellcheck cannot see that
 # the variables and helpers it uses are used (SC2317 in shellcheck 0.9, SC2329 from 0.10 on).
 # shellcheck disable=SC2016,SC2034,SC2317,SC2329
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 script=${CLACC:-$(cd "$here/.." && pwd)/clacc}
+installer=${CLACC_INSTALLER:-$(cd "$here/.." && pwd)/install.sh}
 HOME=$(cd "$(mktemp -d)" && pwd -P)
 export HOME
 # The stand-ins come first in every call, so that no test can reach the real Keychain.
@@ -472,6 +473,30 @@ CLAUDE_CONFIG_DIR=$C run switch beta
 check "the switch works on that folder's item" '[[ $code == 0 && $(item_tok "$(folder "$C")") == tokB && $(item_tok "$(stored alpha)") == tokC ]]'
 check "and leaves the default item alone" '[[ $(item_tok "$active") == tokA && $(rec) == a@x ]]'
 export STUB_UNAME=Linux
+
+echo "--- install.sh"
+setup
+installed=$HOME/.local/bin/clacc
+# On bash's standard input, as in the line in the README.
+install_clacc() { out=$(bash < "$installer" 2>&1); code=$?; }
+STUB_CURL_FILE=$script install_clacc
+check "a fresh machine gets a clacc that runs" '[[ $code == 0 && $("$installed" --help) == *"clacc switch <name>"* ]]'
+check "from the raw file, not from the GitHub page of it" '[[ $(last_log) == "curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/clacc -o "* ]]'
+check "a folder not on the PATH is named" '[[ $out == *"add $HOME/.local/bin to your PATH"* ]]'
+PATH=$HOME/.local/bin:$PATH STUB_CURL_FILE=$script install_clacc
+check "a folder on the PATH is not" '[[ $code == 0 && $out != *"to your PATH"* ]]'
+echo old > "$installed"
+install_clacc
+check "a failed download keeps the installed one" '[[ $code != 0 && $(cat "$installed") == old ]]'
+echo '<!DOCTYPE html>' > "$HOME/page"
+STUB_CURL_FILE=$HOME/page install_clacc
+check "so does a download that does not run, such as a web page" '[[ $code == 1 && $out == *"does not run"* && $(cat "$installed") == old ]]'
+check "and no temporary file stays behind" '[[ $(ls "$HOME/.local/bin") == clacc ]]'
+rm "$HOME/stub.log"
+out=$(sed '/^  mv -f/q' "$installer" | bash 2>&1)
+check "an installer cut off on its way here does nothing" '[[ ! -e $HOME/stub.log && $(cat "$installed") == old ]]'
+STUB_CURL_FILE=$script install_clacc
+check "installing again updates it" '[[ $code == 0 && $("$installed" --help) == *"clacc switch <name>"* ]]'
 
 echo "--- $fails of $checks checks failed"
 exit $((fails > 0))

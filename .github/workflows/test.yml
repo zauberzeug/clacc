@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Lint
         if: runner.os == 'Linux'
-        run: shellcheck clacc tests/*.sh tests/stub/*
+        run: shellcheck clacc install.sh tests/*.sh tests/stub/*
       - name: Test
         run: tests/run.sh
       - name: Check that the tests catch each broken safeguard

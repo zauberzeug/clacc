@@ -33,14 +33,10 @@ have signed in to once, and swaps them in place.
 clacc is a single bash script. It needs Linux or macOS, [jq](https://jqlang.org) and Claude Code.
 
 ```sh
-mkdir -p ~/.local/bin
-curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/clacc -o ~/.local/bin/clacc
-chmod +x ~/.local/bin/clacc
-clacc --help
+curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/install.sh | bash
 ```
 
-If your shell then cannot find `clacc`, add `~/.local/bin` to your `PATH`. Download from this raw
-URL: the page at `github.com/zauberzeug/clacc/blob/main/clacc` is HTML, not the script.
+This puts `clacc` into `~/.local/bin`. Run it again to update.
 
 Or clone this repository and link `clacc` into a folder on your `PATH`.
 

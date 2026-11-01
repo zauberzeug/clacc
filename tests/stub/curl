@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stand-in for curl: `curl -fsSL <url> -o <file>` gets the file named by STUB_CURL_FILE, and fails
+# as on a 404 when that is unset. Every call is logged to $HOME/stub.log.
+echo "curl $*" >> "$HOME/stub.log"
+[[ -n ${STUB_CURL_FILE:-} ]] || exit 22
+cat "$STUB_CURL_FILE" > "$4"

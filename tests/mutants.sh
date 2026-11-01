@@ -1,25 +1,27 @@
 #!/usr/bin/env bash
-# Break one safeguard of clacc per copy and check that tests/run.sh catches every one.
+# Break one safeguard of clacc or its installer per copy and check that tests/run.sh catches every one.
 # Usage: tests/mutants.sh
-# The sed programs match clacc's source text, $ signs included.
+# The sed programs match the source text, $ signs included.
 # shellcheck disable=SC2016
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/.." && pwd)/clacc
+installer=$(cd "$here/.." && pwd)/install.sh
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
-# Each sed program removes or weakens one safeguard.
+# Each sed program removes or weakens one safeguard. The optional arguments name another file to
+# break and the variable that hands its copy to tests/run.sh.
 mutant() {
-  local name=$1
-  sed "$2" "$src" > "$work/$name"
+  local name=$1 from=${3:-$src} var=${4:-CLACC}
+  sed "$2" "$from" > "$work/$name"
   chmod +x "$work/$name"
-  if cmp -s "$src" "$work/$name"; then
-    echo "stale  $name: its edit no longer applies to clacc" > "$work/$name.result"
+  if cmp -s "$from" "$work/$name"; then
+    echo "stale  $name: its edit no longer applies to $(basename "$from")" > "$work/$name.result"
     return
   fi
   (
-    if CLACC=$work/$name "$here/run.sh" > "$work/$name.out" 2>&1; then
+    if env "$var=$work/$name" "$here/run.sh" > "$work/$name.out" 2>&1; then
       echo "LIVED  $name" > "$work/$name.result"
     else
       echo "caught $name ($(grep -c '^FAIL' "$work/$name.out") checks failed)" > "$work/$name.result"
@@ -60,6 +62,13 @@ mutant keychain-leaves-login-item '/^  if \[\[ -n \$login_dir && -n \$keychain_u
 mutant keychain-ignores-config-folder 's|^  if \[\[ \$1 == "\$token" \&\& -z \$global \]\]; then|  if [[ $1 == "$token" ]]; then|'
 mutant keychain-parks-in-files 's|^    keychain_write "\$store/\$current.credentials.json" "\$active"|    echo "$active" > "$store/$current.credentials.json"|'
 mutant lock-by-the-written-path 's|^  real=\$(cd -P .*|  real=$claude_dir|'
+install_mutant() { mutant "$1" "$2" "$installer" CLACC_INSTALLER; }
+install_mutant install-from-the-github-page 's|raw.githubusercontent.com/zauberzeug/clacc/main/clacc|github.com/zauberzeug/clacc/blob/main/clacc|'
+install_mutant install-no-chmod '/^  chmod +x "\$new"$/d'
+install_mutant install-unchecked-download '/--help > \/dev\/null || {$/,/^  }$/d'
+install_mutant install-over-the-old-one 's|^new=.*|new=$bin/clacc|'
+install_mutant install-leaves-temporary-file '/^trap /d'
+install_mutant install-runs-while-cut-off '/^main() {$/d; /^}$/d; /^main$/d'
 wait
 sort "$work"/*.result
 ! grep -qv '^caught' "$work"/*.result
