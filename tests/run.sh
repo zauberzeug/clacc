@@ -8,7 +8,9 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 script=${CLACC:-$(cd "$here/.." && pwd)/clacc}
 installer=${CLACC_INSTALLER:-$(cd "$here/.." && pwd)/install.sh}
-HOME=$(cd "$(mktemp -d)" && pwd -P)
+# Without a temporary folder they stop: `cd ""` succeeds, HOME would be the folder they started in, and setup deletes HOME.
+tmp=$(mktemp -d) || exit 1
+HOME=$(cd "$tmp" && pwd -P) || exit 1
 export HOME
 # The stand-ins come first in every call, so that no test can reach the real Keychain.
 real_os=$(uname -s)
@@ -610,6 +612,20 @@ out=$(sed '/^  mv -f/q' "$installer" | bash 2>&1)
 check "an installer cut off on its way here does nothing" '[[ ! -e $HOME/stub.log && $(cat "$installed") == old ]]'
 STUB_CURL_FILE=$script install_clacc
 check "installing again updates it" '[[ $code == 0 && $("$installed" --help) == *"clacc switch [name]"* ]]'
+
+echo "--- the tests themselves"
+setup
+mkdir -p "$HOME/no-mktemp" "$HOME/start"
+printf '#!/bin/sh\nexit 1\n' > "$HOME/no-mktemp/mktemp"
+chmod +x "$HOME/no-mktemp/mktemp"
+touch "$HOME/start/precious"
+# This script up to the line that sets HOME, then what its first setup does.
+{
+  sed '/^export HOME$/q' "$here/run.sh"
+  echo 'rm -rf "$HOME"'
+} > "$HOME/start-of-the-tests"
+(cd "$HOME/start" && PATH=$HOME/no-mktemp:$PATH bash "$HOME/start-of-the-tests") > /dev/null 2>&1
+check "without a temporary folder they stop and delete nothing where they started" '[[ -e $HOME/start/precious ]]'
 
 echo "--- $fails of $checks checks failed"
 exit $((fails > 0))

@@ -7,7 +7,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/.." && pwd)/clacc
 installer=$(cd "$here/.." && pwd)/install.sh
-work=$(mktemp -d)
+work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
 
 # Each sed program removes or weakens one safeguard. The optional arguments name another file to
