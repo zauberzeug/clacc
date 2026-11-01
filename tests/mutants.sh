@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Break one safeguard of clacc or its installer per copy and check that tests/run.sh catches every one.
+# Break one safeguard of clacc, its installer or a gate of this repository per copy, and check that the tests catch every one.
 # Usage: tests/mutants.sh
 # The sed programs match the source text, $ signs included.
 # shellcheck disable=SC2016
@@ -7,15 +7,16 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/.." && pwd)/clacc
 installer=$(cd "$here/.." && pwd)/install.sh
+requirements=$here/requirements.sh
 work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
 # The checks only compute, so more runs at a time than processors just keep one another waiting.
 processors=$(getconf _NPROCESSORS_ONLN)
 
 # Each sed program removes or weakens one safeguard. The optional arguments name another file to
-# break and the variable that hands its copy to tests/run.sh.
+# break, the variable that hands its copy to the tests, and the script of tests that has to notice.
 mutant() {
-  local name=$1 from=${3:-$src} var=${4:-CLACC}
+  local name=$1 from=${3:-$src} var=${4:-CLACC} tests=${5:-run.sh}
   sed "$2" "$from" > "$work/$name"
   chmod +x "$work/$name"
   if cmp -s "$from" "$work/$name"; then
@@ -24,7 +25,7 @@ mutant() {
   fi
   while (($(jobs -r | wc -l) >= processors)); do sleep 0.1; done
   (
-    env "$var=$work/$name" CLACC_STOP_AT_FAIL=1 "$here/run.sh" > "$work/$name.out" 2>&1
+    env "$var=$work/$name" CLACC_STOP_AT_FAIL=1 "$here/$tests" > "$work/$name.out" 2>&1
     first=$(grep -m 1 '^FAIL' "$work/$name.out")
     if [[ -n $first ]]; then
       echo "caught $name by: ${first#FAIL }" > "$work/$name.result"
@@ -98,6 +99,29 @@ install_mutant install-unchecked-download '/--help > \/dev\/null || {$/,/^  }$/d
 install_mutant install-over-the-old-one 's|^new=.*|new=$bin/clacc|'
 install_mutant install-leaves-temporary-file '/^trap /d'
 install_mutant install-runs-while-cut-off '/^main() {$/d; /^}$/d; /^main$/d'
+list_mutant() { mutant "$1" "$2" "$requirements" CLACC_REQUIREMENTS gates.sh; }
+list_mutant list-takes-any-file-name 's/^  if \[\[ ! \$name =~ \$name_format \]\]; then$/  if false; then/'
+list_mutant list-takes-an-id-twice '/: used twice"; fi$/d'
+list_mutant list-takes-a-gap '/run without a gap"; fi$/d'
+list_mutant list-takes-front-matter-anywhere 's/\$(head -n 1 "\$file") != --- || //'
+list_mutant list-takes-front-matter-without-end 's/ || -z \$end//'
+list_mutant list-takes-any-field '/is not a field" ;;$/d'
+list_mutant list-takes-any-type '/is not a type" ;;$/d'
+list_mutant list-takes-any-status '/is not a status" ;;$/d'
+list_mutant list-takes-any-tags '/the tags must be a list/d'
+list_mutant list-takes-any-body '/the body must start with/d'
+list_mutant list-takes-a-dangling-mention 's/^  if \[\[ \$ids != \*" \$id "\* \]\]; then problem "\$id: mentioned.*/  :/'
+list_mutant list-takes-part-of-a-word-as-a-mention 's/grep -rhowIE/grep -rhoIE/'
+list_mutant list-reads-the-git-folder 's/ --exclude-dir=.git//'
+list_mutant list-reads-tmp 's/ --exclude-dir=tmp//'
+list_mutant list-reads-worktrees 's/ --exclude-dir=worktrees//'
+list_mutant list-takes-a-section-without-id 's/^  problem "this section of the tests names no requirement.*/  :/'
+list_mutant list-takes-a-behavior-without-section 's/^    problem "\$id: no section in the tests.*/    :/'
+list_mutant list-asks-a-section-of-any-status 's/\$status == active \&\& //'
+list_mutant list-asks-a-section-of-behaviors-alone 's/ behavior cli data-format / behavior /'
+list_mutant list-reads-one-test-script 's|"\$root"/tests/\*.sh|"$root"/tests/run.sh|'
+list_mutant list-takes-no-requirements '/^if ((highest == 0)); then problem/d'
+list_mutant list-exits-0 's/^exit \$((problems > 0))$/exit 0/'
 wait
 sort "$work"/*.result
 # Reading the log of a CI run takes admin rights, while its annotations are public.

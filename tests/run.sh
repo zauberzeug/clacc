@@ -85,7 +85,7 @@ run_tty() {
   code=$?
 }
 
-echo "--- status"
+echo "--- status (R-006, R-007, R-008)"
 setup
 run
 check "status names the active account" '[[ $out == *"active: alpha (a@x)"* ]]'
@@ -107,7 +107,7 @@ check "anything but Linux and macOS is refused" '[[ $code == 1 && $out == *"need
 STUB_UNAME=FreeBSD run --help
 check "--help works on anything else too" '[[ $code == 0 && $out == *"clacc switch [name]"* ]]'
 
-echo "--- switch alpha -> beta"
+echo "--- switch alpha -> beta (R-003, R-005, R-009)"
 run switch beta
 check "exit 0" '[[ $code == 0 ]]'
 check "active token is beta" '[[ $(active_tok) == tokB ]]'
@@ -122,16 +122,16 @@ check "active token has a fresh modification time" '(( $(date +%s) - $(mtime "$H
 check "no lock left behind" no_locks
 check "no temp file left behind" '[[ -z $(find "$HOME" -name "*.tmp.*") ]]'
 
-echo "--- switch to the active one"
+echo "--- switch to the active one (R-009)"
 run switch beta
 check "says already on beta" '[[ $code == 0 && $out == *"already on beta"* && $(active_tok) == tokB ]]'
 
-echo "--- switch back"
+echo "--- switch back (R-005, R-009)"
 run switch alpha
 check "active token is alpha again" '[[ $code == 0 && $(active_tok) == tokA && $(rec) == a@x ]]'
 check "beta parked again" '[[ $(tok "$S/beta.credentials.json") == tokB && ! -e $S/alpha.credentials.json ]]'
 
-echo "--- refusals change nothing"
+echo "--- refusals change nothing (R-004, R-010)"
 run switch nosuch
 check "unknown account refused" '[[ $code == 1 && $out == *"no stored account"* && $(active_tok) == tokA ]]'
 run switch ../x
@@ -144,7 +144,7 @@ rm "$S/beta.credentials.json"
 run switch beta
 check "missing token points to add" '[[ $code == 1 && $out == *"clacc add beta"* ]]'
 
-echo "--- a lock held by a live process"
+echo "--- a lock held by a live process (R-011)"
 setup
 held "$HOME/.claude.lock"
 run switch beta
@@ -153,7 +153,7 @@ check "nothing switched" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 check "the other process keeps its lock, ours are released" '[[ -d $HOME/.claude.lock && ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.json.lock ]]'
 rmdir "$HOME/.claude.lock"
 
-echo "--- a token write in progress"
+echo "--- a token write in progress (R-011)"
 setup
 held "$HOME/.claude/.storage-write.lock"
 run switch beta
@@ -161,14 +161,14 @@ check "waits for Claude Code's token-write lock, then gives up" '[[ $code == 1 &
 check "nothing switched while a token was being written" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 rmdir "$HOME/.claude/.storage-write.lock"
 
-echo "--- a stale lock (untouched for 2 minutes)"
+echo "--- a stale lock (untouched for 2 minutes) (R-011)"
 setup
 mkdir "$HOME/.claude.lock"
 touch -t 202001010000 "$HOME/.claude.lock"
 run switch beta
 check "stale lock cleared, switch done" '[[ $code == 0 && $(active_tok) == tokB ]] && no_locks'
 
-echo "--- a manual /login to an unknown account"
+echo "--- a manual /login to an unknown account (R-010, R-012)"
 setup
 manual_login
 run switch beta
@@ -180,7 +180,7 @@ check "save gamma" '[[ $code == 0 && $(jq -r .emailAddress "$S/gamma.account.jso
 run
 check "status now says gamma" '[[ $out == *"active: gamma (c@x)"* && $out == *"stored: alpha (a@x), no token"* ]]'
 
-echo "--- a name with dots, such as a mail domain"
+echo "--- a name with dots, such as a mail domain (R-004)"
 setup
 manual_login
 run save acme.de
@@ -206,7 +206,7 @@ for bad in .hidden .. a/../y; do
 done
 check "and none of them stored anything" '[[ -z $(find "$S" -mindepth 1 -maxdepth 1 -name ".*") && ! -e $S/y.account.json ]]'
 
-echo "--- add a new account through a login of its own"
+echo "--- add a new account through a login of its own (R-013)"
 setup
 before=$(sum "$HOME/.claude.json")
 STUB_LOGIN=d run add delta
@@ -219,7 +219,7 @@ check "login folder removed" '[[ -z $(find "$S" -name "login.*") ]]'
 run switch delta
 check "can switch to the added account" '[[ $code == 0 && $(active_tok) == tokD && $(rec) == d@x ]]'
 
-echo "--- add refusals"
+echo "--- add refusals (R-013)"
 setup
 before=$(sum "$HOME/.claude.json")
 STUB_LOGIN=b run add beta
@@ -236,7 +236,7 @@ STUB_LOGIN=d run add gamma
 check "signing in as another account than the name's refused" '[[ $code == 1 && $out == *"but gamma is c@x"* && $(jq -r .emailAddress "$S/gamma.account.json") == c@x && ! -e $S/gamma.credentials.json ]]'
 check "no add wrote ~/.claude.json or the active token" '[[ $(sum "$HOME/.claude.json") == "$before" && $(active_tok) == tokA ]]'
 
-echo "--- run: one session on an account's own login"
+echo "--- run: one session on an account's own login (R-003, R-005, R-015)"
 setup
 before=$(sum "$HOME/.claude.json")
 L=$S/beta.local
@@ -260,7 +260,7 @@ check "a token folder set by the caller is not passed on" '[[ $code == 0 && $(la
 run
 check "status lists the run folder and its login" '[[ $out == *"local:  beta (b@x)"* ]]'
 
-echo "--- run: links stay links"
+echo "--- run: links stay links (R-018)"
 echo '{"x":1}' > "$L/keybindings.json"
 run run beta
 check "a file a session made first moves to ~/.claude and is linked" '[[ -L $L/keybindings.json && $(jq -c . "$HOME/.claude/keybindings.json") == "{\"x\":1}" ]]'
@@ -269,7 +269,7 @@ echo "own" > "$L/CLAUDE.md"
 run run beta
 check "one that differs from ~/.claude is reported and left alone" '[[ $code == 0 && $out == *"CLAUDE.md is not shared"* && $(cat "$L/CLAUDE.md") == own && $(cat "$HOME/.claude/CLAUDE.md") == "global instructions" ]]'
 
-echo "--- run: arguments for claude"
+echo "--- run: arguments for claude (R-016)"
 setup
 run run beta --version
 check "--version needs no login and goes straight to claude" '[[ $code == 0 && $(last_log) == "session config=$L secure=unset global= args=--version" && $(grep -c "^auth" "$HOME/stub.log") == 0 ]]'
@@ -280,7 +280,7 @@ check "a call that begins with a prompt leaves the sign-in to claude" '[[ $code 
 STUB_LOGIN=b run_tty run beta -- --model team-model -c
 check "options start a session: sign in first, then pass them on, without the --" '[[ $code == 0 && $(grep -c "^auth" "$HOME/stub.log") == 1 && $(last_log) == "session config=$L secure=unset global= args=--model team-model -c" ]]'
 
-echo "--- run: the model is the folder's own, every other setting shared"
+echo "--- run: the model is the folder's own, every other setting shared (R-019)"
 model_pick() { jq ".model = \"$1\"" "$L/settings.json" > "$HOME/x" && mv "$HOME/x" "$L/settings.json"; }
 model_pick team-model
 run run beta
@@ -308,7 +308,7 @@ ln -sf "$HOME/.claude/settings.json" "$L/settings.json"
 run run beta
 check "a link from an earlier clacc becomes a file, the shared one untouched" '[[ -f $L/settings.json && ! -L $L/settings.json && $(sum "$HOME/.claude/settings.json") == "$before" ]]'
 
-echo "--- run: refusals"
+echo "--- run: refusals (R-017)"
 setup
 STUB_LOGIN=d run_tty run beta
 check "a login of another account starts no session" '[[ $code == 1 && $out == *"is d@x in no organisation, not b@x in org-b"* && $(grep -c "^session" "$HOME/stub.log") == 0 ]]'
@@ -331,7 +331,7 @@ STUB_LOGIN=d run_tty run delta
 check "a name with no stored account takes any login" '[[ $code == 0 && $(last_log) == "session config=$S/delta.local secure=unset global= args=" ]]'
 check "the global login untouched by all of it" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 
-echo "--- switch without a name: the account with the most headroom"
+echo "--- switch without a name: the account with the most headroom (R-030)"
 setup
 STUB_USAGE="tokA=50,10 tokB=20,30" run switch
 check "moves every session to the account with the most left" '[[ $code == 0 && $(active_tok) == tokB && $(rec) == b@x && $(tok "$S/alpha.credentials.json") == tokA ]]'
@@ -349,7 +349,7 @@ check "a limit past its end counts as nothing left, and with nothing left anywhe
 STUB_USAGE="tokA=0,100" run switch
 check "so an active login that cannot be read moves nobody to a used-up account" '[[ $code == 1 && $out == *"beta: could not read its usage"* && $out == *"no account has headroom left"* && $(active_tok) == tokB ]]'
 
-echo "--- switch without a name: what it leaves out"
+echo "--- switch without a name: what it leaves out (R-030)"
 setup
 echo '{"accountUuid":"cccccccc-0000-0000-0000-000000000000","emailAddress":"c@x"}' > "$S/gamma.account.json"
 STUB_USAGE="tokA=50,10 tokB=90,10" run switch
@@ -368,7 +368,7 @@ STUB_USAGE="tokB=20,30" run switch
 check "an active login that is not stored is named, and the switch refuses as before" '[[ $code == 1 && $out == *"the active login (c@x) is not stored"* && $(active_tok) == tokA ]]'
 check "no lock left behind" no_locks
 
-echo "--- how an account is read"
+echo "--- how an account is read (R-030, R-031)"
 setup
 STUB_USAGE="tokA=10,10 tokB=50,50" run switch
 check "the active login in Claude Code's own folder, from the store, as a local command without a saved session" '[[ $(readings | head -n 1) == "usage config=unset cwd=$S lent-lock=free args=-p /usage --safe-mode --no-session-persistence --model haiku" ]]'
@@ -379,7 +379,7 @@ setup
 CLAUDE_CONFIG_DIR=$S/beta.local STUB_USAGE="tokA=10,10 tokB=50,50" run switch
 check "inside a run session the active login is still read in the default folder" '[[ $(readings | head -n 1) == "usage config=unset "* ]]'
 
-echo "--- a parked token that Claude Code renews while it reads"
+echo "--- a parked token that Claude Code renews while it reads (R-005, R-031)"
 setup
 expired "$S/beta.credentials.json"
 STUB_USAGE="tokA=10,10 new-refB=50,50" run switch
@@ -392,7 +392,7 @@ expired "$S/beta.credentials.json"
 STUB_KILL=$script STUB_USAGE="tokA=10,10 new-refB=50,50" run switch
 check "it comes back even when clacc is stopped right after the renewal" '[[ $code != 0 && $(field "$S/beta.credentials.json" accessToken) == new-refB && -z $(find "$S" -name "login.*") ]] && no_locks'
 
-echo "--- a switch while a parked token is being read"
+echo "--- a switch while a parked token is being read (R-011, R-031)"
 setup
 held "$S/.lent.lock"
 run switch beta
@@ -403,7 +403,7 @@ held "$S/.lent.lock"
 STUB_RELEASE=$S/.lent.lock run switch beta
 check "and goes through as soon as the reading is over" '[[ $code == 0 && -s $HOME/sleep.log && $(active_tok) == tokB ]]'
 
-echo "--- run without a name"
+echo "--- run without a name (R-016, R-030)"
 setup
 L=$S/beta.local
 STUB_LOGIN=b STUB_USAGE="tokA=50,10 tokB=20,30" run_tty run
@@ -427,7 +427,7 @@ manual_login
 STUB_USAGE="tokB2=20,30" run run -c
 check "an active login that is not stored is named and left out" '[[ $code == 0 && $out == *"the active login (c@x) is not stored"* && $out == *"most headroom: beta"* ]]'
 
-echo "--- Claude Code in another folder (CLAUDE_CONFIG_DIR)"
+echo "--- Claude Code in another folder (CLAUDE_CONFIG_DIR) (R-020)"
 setup
 C=$HOME/custom
 mkdir -p "$C"
@@ -449,7 +449,7 @@ check "a run folder alone in CLAUDE_CONFIG_DIR, as in a spawned helper, means th
 CLAUDE_CONFIG_DIR=$C STUB_USAGE="tokB=10,10" run switch
 check "without a name the active login is read in that folder too" '[[ $(readings | tail -n 1) == "usage config=$C "* ]]'
 
-echo "--- a config folder reached through a link"
+echo "--- a config folder reached through a link (R-011)"
 setup
 ln -s "$HOME/.claude" "$HOME/link"
 echo '{"oauthAccount":{"accountUuid":"aaaaaaaa-0000-0000-0000-000000000000","emailAddress":"a@x"}}' > "$HOME/.claude/.claude.json"
@@ -458,7 +458,7 @@ CLAUDE_CONFIG_DIR=$HOME/link run switch beta
 check "the lock beside the folder goes by its real path" '[[ $code == 1 && $out == *".claude.lock is held"* ]]'
 rmdir "$HOME/.claude.lock"
 
-echo "--- rename"
+echo "--- rename (R-004, R-014)"
 setup
 run rename beta work
 check "rename the stored account moves record and token" '[[ $code == 0 && -f $S/work.account.json && $(tok "$S/work.credentials.json") == tokB && ! -e $S/beta.account.json && ! -e $S/beta.credentials.json ]]'
@@ -478,7 +478,7 @@ run switch run
 check "and can be switched to" '[[ $code == 0 && $(active_tok) == tokA && $(rec) == a@x ]]'
 check "no lock left behind" no_locks
 
-echo "--- macOS: every login in the Keychain"
+echo "--- macOS: every login in the Keychain (R-009, R-021)"
 export STUB_UNAME=Darwin
 active=Claude\ Code-credentials
 stored() { echo "clacc $S/$1.credentials.json"; }
@@ -510,7 +510,7 @@ check "no lock left behind" no_locks
 run switch alpha
 check "and back" '[[ $code == 0 && $(item_tok "$active") == tokA && $(item_tok "$(stored beta)") == tokB && ! $(has_item "$(stored alpha)" && echo yes) ]]'
 
-echo "--- macOS: what a login item can hold"
+echo "--- macOS: what a login item can hold (R-022)"
 setup_keychain
 long=$(printf 'x%.0s' $(seq 1 3300))
 put_item "$active" "{\"claudeAiOauth\":{\"accessToken\":\"tokA\"},\"mcpOAuth\":\"$long\"}"
@@ -524,7 +524,7 @@ put_item "$(stored beta)" '{"claudeAiOauth":{"accessToken":"tokÜ"}}'
 run switch beta
 check "a token that security prints as hex arrives readable" '[[ $code == 0 && $(LC_ALL=C item "$active") =~ ^[0-9a-f]+$ && $(item "$active" | xxd -r -p | jq -r .claudeAiOauth.accessToken) == tokÜ ]]'
 
-echo "--- macOS: refusals change nothing"
+echo "--- macOS: refusals change nothing (R-010, R-022)"
 setup_keychain
 put_item "$(stored beta)" 'not json'
 run switch beta
@@ -540,7 +540,7 @@ security delete-generic-password -a tester -s "$active" > /dev/null
 run switch beta
 check "no login at all is reported" '[[ $code == 1 && $out == *"no active login"* ]]'
 
-echo "--- macOS: add"
+echo "--- macOS: add (R-013, R-021)"
 setup_keychain
 STUB_LOGIN=d run add delta
 check "the token moves to its stored item" '[[ $code == 0 && $(item_tok "$(stored delta)") == tokD ]]'
@@ -555,7 +555,7 @@ STUB_LOGIN=b run add epsilon
 check "signing in as a stored account refused" '[[ $code == 1 && $out == *"already stored as beta"* ]]'
 check "and its login item removed" '[[ $(security dump-keychain | grep -c "Claude Code-credentials-") == 0 ]]'
 
-echo "--- macOS: run"
+echo "--- macOS: run (R-015, R-017, R-021)"
 setup_keychain
 L=$S/beta.local
 STUB_LOGIN=b run_tty run beta -c
@@ -568,7 +568,7 @@ setup_keychain
 STUB_LOGIN=d run_tty run beta
 check "a login of another account starts no session and names the command to remove it" '[[ $code == 1 && $out == *"security delete-generic-password -a tester -s \"$(folder "$L")\""* && $(grep -c "^session" "$HOME/stub.log") == 0 ]]'
 
-echo "--- macOS: rename"
+echo "--- macOS: rename (R-014, R-021)"
 setup_keychain
 run rename beta work
 check "rename moves the stored item" '[[ $code == 0 && $(item_tok "$(stored work)") == tokB ]] && ! has_item "$(stored beta)"'
@@ -576,7 +576,7 @@ put_item "$(stored taken)" '{}'
 run rename work taken
 check "a name with a token is taken" '[[ $code == 1 && $out == *"already taken"* && $(item_tok "$(stored work)") == tokB ]]'
 
-echo "--- macOS: Claude Code in another folder (CLAUDE_CONFIG_DIR)"
+echo "--- macOS: Claude Code in another folder (CLAUDE_CONFIG_DIR) (R-020, R-021)"
 setup_keychain
 C=$HOME/custom
 mkdir -p "$C"
@@ -586,7 +586,7 @@ CLAUDE_CONFIG_DIR=$C run switch beta
 check "the switch works on that folder's item" '[[ $code == 0 && $(item_tok "$(folder "$C")") == tokB && $(item_tok "$(stored alpha)") == tokC ]]'
 check "and leaves the default item alone" '[[ $(item_tok "$active") == tokA && $(rec) == a@x ]]'
 
-echo "--- macOS: without a name"
+echo "--- macOS: without a name (R-021, R-030, R-031)"
 lent_items() { security dump-keychain | grep -c "Claude Code-credentials-"; }
 setup_keychain
 STUB_USAGE="tokA=50,10 tokB=20,30" run switch
@@ -601,7 +601,7 @@ STUB_KILL=$script STUB_USAGE="tokA=10,10 new-refB=50,50" run switch
 check "also when clacc is stopped right after the renewal" '[[ $code != 0 && $(item_tok "$(stored beta)") == new-refB && $(lent_items) == 0 ]] && no_locks'
 export STUB_UNAME=Linux
 
-echo "--- install.sh"
+echo "--- install.sh (R-025)"
 setup
 installed=$HOME/.local/bin/clacc
 # On bash's standard input, as in the line in the README.
@@ -625,7 +625,7 @@ check "an installer cut off on its way here does nothing" '[[ ! -e $HOME/stub.lo
 STUB_CURL_FILE=$script install_clacc
 check "installing again updates it" '[[ $code == 0 && $("$installed" --help) == *"clacc switch [name]"* ]]'
 
-echo "--- the tests themselves"
+echo "--- the tests themselves (R-026)"
 setup
 mkdir -p "$HOME/no-mktemp" "$HOME/start"
 printf '#!/bin/sh\nexit 1\n' > "$HOME/no-mktemp/mktemp"
