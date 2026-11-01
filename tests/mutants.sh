@@ -8,6 +8,7 @@ here=$(cd "$(dirname "$0")" && pwd)
 src=$(cd "$here/.." && pwd)/clacc
 installer=$(cd "$here/.." && pwd)/install.sh
 requirements=$here/requirements.sh
+pre_push=$(cd "$here/.." && pwd)/.githooks/pre-push
 work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
 # The checks only compute, so more runs at a time than processors just keep one another waiting.
@@ -122,6 +123,17 @@ list_mutant list-asks-a-section-of-behaviors-alone 's/ behavior cli data-format 
 list_mutant list-reads-one-test-script 's|"\$root"/tests/\*.sh|"$root"/tests/run.sh|'
 list_mutant list-takes-no-requirements '/^if ((highest == 0)); then problem/d'
 list_mutant list-exits-0 's/^exit \$((problems > 0))$/exit 0/'
+gate_mutant() { mutant "$1" "$2" "$pre_push" CLACC_PRE_PUSH gates.sh; }
+gate_mutant gate-on-the-working-tree 's/^  make -C "\$copy" "\$target" < \/dev\/null$/  make "$target" < \/dev\/null/'
+gate_mutant gate-on-the-checked-out-commit 's/git archive "\$sha"/git archive HEAD/'
+gate_mutant gate-runs-the-lint-alone 's/^  target=check$/  target=lint/'
+gate_mutant gate-runs-everything-for-markdown 's/then target=lint; fi$/then target=check; fi/'
+gate_mutant gate-takes-any-change-as-markdown 's/ \&\& ! grep -qv .* <<< "\$changed"; then/; then/'
+gate_mutant gate-on-every-branch 's/^  if \[\[ \$remote_ref != refs\/heads\/main \]\]; then continue; fi$/  :/'
+gate_mutant gate-on-no-branch 's/^  if \[\[ \$remote_ref != refs\/heads\/main \]\]; then continue; fi$/  continue/'
+gate_mutant gate-lets-main-be-deleted 's/^  if \[\[ \$remote_ref != refs\/heads\/main \]\]; then continue; fi$/  if [[ $remote_ref != refs\/heads\/main || $sha =~ ^0+$ ]]; then continue; fi/'
+gate_mutant gate-ignores-a-failure 's/^  make -C "\$copy" "\$target" < \/dev\/null$/  make -C "$copy" "$target" < \/dev\/null || true/'
+gate_mutant gate-leaves-its-copy '/^  trap /d'
 wait
 sort "$work"/*.result
 # Reading the log of a CI run takes admin rights, while its annotations are public.

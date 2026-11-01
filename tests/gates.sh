@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Exercise the gates of this repository on throwaway ones.
 # Usage: tests/gates.sh   (CLACC_REQUIREMENTS=<path> tests another copy of the requirements check,
-# and CLACC_STOP_AT_FAIL=1 ends the run at the first failing check)
+# CLACC_PRE_PUSH=<path> of the push gate, and CLACC_STOP_AT_FAIL=1 ends the run at the first failing check)
 # Each check is single-quoted on purpose and check() evaluates it, so shellcheck cannot see that
 # the variables and helpers it uses are used (SC2317 in shellcheck 0.9, SC2329 from 0.10 on).
 # shellcheck disable=SC2016,SC2034,SC2317,SC2329
@@ -9,6 +9,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(cd "$here/.." && pwd)
 requirements=${CLACC_REQUIREMENTS:-$here/requirements.sh}
+pre_push=${CLACC_PRE_PUSH:-$repo/.githooks/pre-push}
 # Without a temporary folder they stop, as in run.sh.
 tmp=$(mktemp -d) || exit 1
 HOME=$(cd "$tmp" && pwd -P) || exit 1
@@ -125,6 +126,63 @@ check "a list with no requirements at all fails" '[[ $code == 1 && $out == *"no 
 out=$("$requirements" "$repo" 2>&1)
 code=$?
 check "this repository passes it" '[[ $code == 0 && -z $out ]]'
+
+echo "--- the push gate (R-028)"
+# A hook gets these from git, and here they would point the git of the tests at the real repository.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+export GIT_AUTHOR_NAME=test GIT_AUTHOR_EMAIL=test@example.com GIT_COMMITTER_NAME=test GIT_COMMITTER_EMAIL=test@example.com
+export TMPDIR=$HOME/gate-tmp
+mkdir "$TMPDIR" "$HOME/hooks"
+O=$HOME/origin.git
+C=$HOME/clone
+git init -q --bare "$O"
+git init -q "$C"
+git -C "$C" symbolic-ref HEAD refs/heads/main
+git -C "$C" remote add origin "$O"
+git -C "$C" config core.hooksPath "$HOME/hooks"
+cp "$pre_push" "$HOME/hooks/pre-push"
+# Each target of this gate leaves a trace, and passes when its file is in the pushed commit.
+printf 'check:\n\techo check >> "%s"\n\ttest -f ok\nlint:\n\techo lint >> "%s"\n\ttest -f lint-ok\n' "$HOME/gate.log" "$HOME/gate.log" > "$C/Makefile"
+commit() { git -C "$C" add "$@" && git -C "$C" commit -qm change; }
+push() { : > "$HOME/gate.log"; out=$(git -C "$C" push origin "$1" 2>&1); code=$?; }
+ran() { xargs < "$HOME/gate.log"; }
+on_origin() { git -C "$O" rev-parse -q --verify "refs/heads/$1"; }
+pushed() { [[ $(on_origin main) == "$(git -C "$C" rev-parse main)" ]]; }
+
+touch "$C/ok"
+commit Makefile
+push main
+check "a commit that fails the gate is refused, whatever the working tree holds" '[[ $code != 0 && -z $(on_origin main) && $(ran) == check ]]'
+commit ok
+push main
+check "one that passes goes through" '[[ $code == 0 && $(ran) == check ]] && pushed'
+echo text > "$C/README.md"
+commit README.md
+push main
+check "a change of Markdown alone runs the lint alone, which can refuse it" '[[ $code != 0 && $(ran) == lint ]] && ! pushed'
+touch "$C/lint-ok"
+commit lint-ok
+push main
+check "a change of anything else along with it runs everything" '[[ $code == 0 && $(ran) == check ]] && pushed'
+echo more >> "$C/README.md"
+commit README.md
+push main
+check "and a clean lint lets a change of Markdown through" '[[ $code == 0 && $(ran) == lint ]] && pushed'
+git -C "$C" checkout -q -b topic
+git -C "$C" rm -q ok
+git -C "$C" commit -qm "no longer passes"
+push topic
+check "a push to another branch runs no gate" '[[ $code == 0 && -z $(ran) && -n $(on_origin topic) ]]'
+git -C "$C" checkout -q main
+touch "$C/code"
+commit code
+git -C "$C" checkout -q topic
+push main
+check "the pushed commit decides, not the one checked out" '[[ $code == 0 && $(ran) == check ]] && pushed'
+push :main
+check "a deletion of main is refused" '[[ $code != 0 ]] && pushed'
+check "no copy stays behind" '[[ -z $(ls "$TMPDIR") ]]'
 
 echo "--- $fails of $checks checks failed"
 exit $((fails > 0))

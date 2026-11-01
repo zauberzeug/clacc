@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Nothing reaches main that fails the gate, because main is what install.sh hands to users (R-028).
+# The gate runs on a clean copy of the pushed commit, so an uncommitted edit cannot decide the result.
+set -euo pipefail
+while read -r _ sha remote_ref remote_sha; do
+  if [[ $remote_ref != refs/heads/main ]]; then continue; fi
+  target=check
+  # A first push has nothing to compare with, and so runs everything.
+  if changed=$(git diff --name-only "$remote_sha" "$sha" 2> /dev/null) && ! grep -qv '\.md$' <<< "$changed"; then target=lint; fi
+  copy=$(mktemp -d)
+  trap 'rm -rf "$copy"' EXIT
+  git archive "$sha" | tar -x -C "$copy"
+  make -C "$copy" "$target" < /dev/null
+done

@@ -1,7 +1,7 @@
 ---
 type: behavior
 tags: [workflow, tests]
-status: planned
+status: active
 ---
 
 # Nothing reaches main unchecked
