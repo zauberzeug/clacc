@@ -38,6 +38,7 @@ mutant() {
 
 mutant park-without-link 's|^  ln -f "\$token" "\$store/\$current.credentials.json"|  :|'
 mutant no-locks 's|^  lock_all$|  :|'
+mutant no-umask '/^umask 077$/d'
 mutant no-chmod 's|^  chmod 600 "\$store/\$target.credentials.json"|  :|'
 mutant no-fresh-modification-time 's|^  touch "\$store/\$target.credentials.json" .*|  :|'
 mutant lock-gives-up-at-once 's|tries < 100|tries < 1|'
@@ -92,6 +93,7 @@ mutant reading-without-the-lock '/^read_parked() {$/,/^}$/ s#^  take_lock "\$len
 mutant reading-keeps-the-lock '/^read_parked() {$/,/^}$/ s#^  unlock_all$#  :#'
 mutant switch-ignores-a-reading 's#for lock in "\$lent_lock" #for lock in #'
 mutant lent-token-left-behind 's#^  if \[\[ -n \$lent \]\] \&\& has_token .*#  :#'
+mutant exit-keeps-the-locks '/^cleanup() {$/,/^}$/ s#^  unlock_all$#  :#'
 mutant stopped-reading-loses-the-token '/^cleanup() {$/,/^}$/ s#^  close_login_dir$#  :#'
 install_mutant() { mutant "$1" "$2" "$installer" CLACC_INSTALLER; }
 install_mutant install-from-the-github-page 's|raw.githubusercontent.com/zauberzeug/clacc/main/clacc|github.com/zauberzeug/clacc/blob/main/clacc|'
