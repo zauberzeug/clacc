@@ -1,7 +1,7 @@
 # AGENTS.md
 
 Instructions for every coding agent in this repository.
-`CLAUDE.md` only imports this file, so change this one.
+Claude Code reads this file too, but only as long as there is no `CLAUDE.md`, so do not add one, for example through `/init`.
 
 clacc is one bash script that switches Claude Code between accounts.
 [README.md](README.md) explains it to users, and [`requirements/`](requirements/) says what it must do and why.
