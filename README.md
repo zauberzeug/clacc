@@ -138,6 +138,11 @@ reading ends. A switch waits meanwhile.
 on either system.
 `tests/mutants.sh` breaks each safeguard in turn and checks that the tests notice.
 
+## Contributing
+
+Issues and pull requests are welcome.
+[CONTRIBUTING.md](CONTRIBUTING.md) describes how a change is made, and [`requirements/`](requirements/) what clacc must do and why.
+
 ## License
 
 [MIT](LICENSE). clacc is not affiliated with Anthropic.
