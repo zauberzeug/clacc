@@ -98,7 +98,8 @@ mutant stopped-reading-loses-the-token '/^cleanup() {$/,/^}$/ s#^  close_login_d
 install_mutant() { mutant "$1" "$2" "$installer" CLACC_INSTALLER; }
 install_mutant install-from-the-github-page 's|raw.githubusercontent.com/zauberzeug/clacc/main/clacc|github.com/zauberzeug/clacc/blob/main/clacc|'
 install_mutant install-no-chmod '/^  chmod +x "\$new"$/d'
-install_mutant install-unchecked-download '/--help > \/dev\/null || {$/,/^  }$/d'
+install_mutant install-unchecked-download '/--help 2> \/dev\/null) == \*clacc\* \]\] || {$/,/^  }$/d'
+install_mutant install-takes-an-empty-download 's#^  \[\[ \$("\$new" --help 2> /dev/null) == \*clacc\* \]\] || {$#  "$new" --help > /dev/null || {#'
 install_mutant install-over-the-old-one 's|^new=.*|new=$bin/clacc|'
 install_mutant install-leaves-temporary-file '/^trap /d'
 install_mutant install-runs-while-cut-off '/^main() {$/d; /^}$/d; /^main$/d'

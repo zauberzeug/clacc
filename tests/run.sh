@@ -618,6 +618,9 @@ check "a failed download keeps the installed one" '[[ $code != 0 && $(cat "$inst
 echo '<!DOCTYPE html>' > "$HOME/page"
 STUB_CURL_FILE=$HOME/page install_clacc
 check "so does a download that does not run, such as a web page" '[[ $code == 1 && $out == *"does not run"* && $(cat "$installed") == old ]]'
+: > "$HOME/empty"
+STUB_CURL_FILE=$HOME/empty install_clacc
+check "and an empty one" '[[ $code == 1 && $out == *"does not run"* && $(cat "$installed") == old ]]'
 check "and no temporary file stays behind" '[[ $(ls "$HOME/.local/bin") == clacc ]]'
 rm "$HOME/stub.log"
 out=$(sed '/^  mv -f/q' "$installer" | bash 2>&1)
