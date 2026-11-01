@@ -8,6 +8,9 @@
 # token waits in ~/.clacc/<name>.credentials.json. Each token exists in one place only:
 # a session that refreshes one copy leaves every other copy with a dead refresh token.
 #
+# On macOS Claude Code keeps logins in the Keychain instead, so clacc keeps them there too: see
+# keychain_service for the item of each. A session rereads its item every 30 seconds.
+#
 # A `run` session uses ~/.clacc/<name>.local as its config folder (CLAUDE_CONFIG_DIR): a
 # login and a .claude.json of its own, and links to ~/.claude for settings, skills, plugins,
 # projects and memory. It cannot share ~/.claude.json, because a session that starts after
@@ -27,8 +30,6 @@ else
   claude_dir=$HOME/.claude config=$HOME/.claude.json
 fi
 token=$claude_dir/.credentials.json
-# The lock folders Claude Code takes around a token refresh, a token write and a config write.
-locks=("$claude_dir/.oauth_refresh.lock" "$(realpath -m "$claude_dir").lock" "$claude_dir/.storage-write.lock" "$config.lock")
 # What a `run` session shares with Claude Code's own folder; everything else in its folder is its own.
 shared_dirs=(projects skills agents commands output-styles plugins plans agent-memory todos file-history paste-cache shell-snapshots session-env sessions ide)
 shared_files=(CLAUDE.md keybindings.json history.jsonl statusline-command.sh)
@@ -36,11 +37,16 @@ shared_files=(CLAUDE.md keybindings.json history.jsonl statusline-command.sh)
 own_settings='["model"]'
 held=()
 login_dir=""
-trap cleanup EXIT
+keychain_user="" # set on macOS, where the logins are in the Keychain
 
 main() {
   if [[ ${1:-} == -h || ${1:-} == --help ]]; then usage 0; fi
-  [[ $(uname -s) == Linux ]] || die "clacc needs Linux, where Claude Code keeps its login in a file (on macOS it is in the Keychain)"
+  case $(uname -s) in
+    Linux) ;;
+    Darwin) keychain_user=${USER:-$(id -un)} ;;
+    *) die "clacc needs Linux or macOS" ;;
+  esac
+  trap cleanup EXIT
   command -v jq > /dev/null || die "clacc needs jq (https://jqlang.org)"
   mkdir -p "$store"
   case "${1:-}" in
@@ -75,7 +81,7 @@ status() {
   echo "active: ${current:-not stored} ($(active_email))"
   for name in $(stored_names); do
     if [[ $name == "$current" ]]; then continue; fi
-    if [[ -f $store/$name.credentials.json ]]; then
+    if has_token "$store/$name.credentials.json"; then
       echo "stored: $name ($(email_of "$name"))"
     else
       echo "stored: $name ($(email_of "$name")), no token: clacc add $name"
@@ -89,10 +95,10 @@ status() {
 }
 
 switch() {
-  local target=$1 current
+  local target=$1 current follow="at their next request"
   check_name "$target"
   [[ -f $store/$target.account.json ]] || die "no stored account '$target' (stored: $(stored_names | xargs))"
-  [[ -f $token ]] || die "there is no active login in $token"
+  has_token "$token" || die "there is no active login"
   lock_all
   current=$(active_name)
   [[ -n $current ]] || die "the active login ($(active_email)) is not stored; name it first: clacc save <name>"
@@ -100,16 +106,28 @@ switch() {
     echo "already on $target ($(active_email))"
     return
   fi
-  [[ -f $store/$target.credentials.json ]] || die "no token stored for $target; sign in once: clacc add $target"
-  jq -e .claudeAiOauth.accessToken "$store/$target.credentials.json" > /dev/null || die "the stored token for $target is unreadable"
+  has_token "$store/$target.credentials.json" || die "no token stored for $target; sign in once: clacc add $target"
+  read_token "$store/$target.credentials.json" | jq -e .claudeAiOauth.accessToken > /dev/null || die "the stored token for $target is unreadable"
   jq_to "$store/$current.account.json" .oauthAccount "$config"
-  ln -f "$token" "$store/$current.credentials.json"  # park the active token under a second name,
-  chmod 600 "$store/$target.credentials.json"        # keep the target's token readable by you only,
-  touch "$store/$target.credentials.json"            # give it a new modification time so every session notices,
-  mv -fT "$store/$target.credentials.json" "$token"  # then put it in the active token's place
+  swap_tokens "$current" "$target"
   set_record "$store/$target.account.json"
   unlock_all
-  echo "switched from $current to $target ($(active_email)); running sessions follow at their next request"
+  if [[ -n $keychain_user ]]; then follow="within 30 seconds"; fi
+  echo "switched from $current to $target ($(active_email)); running sessions follow $follow"
+}
+
+swap_tokens() {
+  local current=$1 target=$2 active
+  if [[ -n $keychain_user ]]; then
+    active=$(read_token "$token")
+    keychain_write "$store/$current.credentials.json" "$active"
+    move_token "$store/$target.credentials.json" "$token"
+    return
+  fi
+  ln -f "$token" "$store/$current.credentials.json" # park the active token under a second name,
+  chmod 600 "$store/$target.credentials.json"       # keep the target's token readable by you only,
+  touch "$store/$target.credentials.json"           # give it a new modification time so every session notices,
+  mv -f "$store/$target.credentials.json" "$token"  # then put it in the active token's place
 }
 
 # One session on <name>'s own login, with the remaining arguments passed to claude. The first
@@ -124,7 +142,7 @@ run_local() {
   prepare_local "$dir"
   export CLACC_CLAUDE_CONFIG_DIR=$global
   export CLAUDE_CONFIG_DIR=$dir
-  if [[ ! -f $dir/.credentials.json ]] && starts_session "$@"; then
+  if ! has_token "$dir/.credentials.json" && starts_session "$@"; then
     [[ -t 0 && -t 1 ]] || die "$name has no login of its own yet; start it once in a terminal to sign in"
     want=$(jq -r '.emailAddress // empty' "$store/$name.account.json" 2> /dev/null || true)
     if [[ -n $want ]]; then sign_in+=(--email "$want"); fi
@@ -158,7 +176,7 @@ check_local_account() {
       elif $g.accountUuid != $w.accountUuid then "other"
       elif $g.organizationUuid and $w.organizationUuid and $g.organizationUuid != $w.organizationUuid then "other"
       else "ok" end' 2> /dev/null || echo ok)
-  [[ $verdict == ok ]] || die "the own login of $name is $(jq -r ".oauthAccount | $who" "$dir/.claude.json"), not $(jq -r "$who" "$store/$name.account.json"); remove it with: rm $dir/.credentials.json"
+  [[ $verdict == ok ]] || die "the own login of $name is $(jq -r ".oauthAccount | $who" "$dir/.claude.json"), not $(jq -r "$who" "$store/$name.account.json"); remove it with: $(remove_command "$dir/.credentials.json")"
 }
 
 prepare_local() {
@@ -200,7 +218,7 @@ sync_settings() {
     | (reduce $push[] as $key ($s; if $o | has($key) then .[$key] = $o[$key] else del(.[$key]) end)) as $s2
     | {shared: (if $push == [] then null else $s2 end), kept: [$session[] | select($s[.] != $b[.] and $s[.] != $o[.])], keep: $k, own: ($s2 + $k)}')
   if [[ $(jq -c .shared <<< "$out") != null ]]; then
-    mode=$(stat -c %a "$shared" 2> /dev/null || echo 600)
+    mode=$(file_mode "$shared" || echo 600)
     jq_to "$shared" .shared <<< "$out"
     chmod "$mode" "$shared"
   fi
@@ -218,7 +236,7 @@ share() {
   local dir=$1 entry=$2
   if [[ -L $dir/$entry ]]; then return 0; fi
   if [[ -e $dir/$entry ]]; then
-    if [[ ! -e $claude_dir/$entry ]]; then mv -nT "$dir/$entry" "$claude_dir/$entry"; fi
+    if [[ ! -e $claude_dir/$entry ]]; then mv -n "$dir/$entry" "$claude_dir/$entry"; fi
     if [[ -e $dir/$entry ]]; then
       warn "$dir/$entry is not shared with $claude_dir/$entry; remove one of the two to share it"
       return 0
@@ -245,12 +263,12 @@ seed_config() {
 add() {
   local name=$1 record uuid other
   check_name "$name"
-  [[ ! -f $store/$name.credentials.json ]] || die "$name is already stored"
+  ! has_token "$store/$name.credentials.json" || die "$name is already stored"
   [[ $name != "$(active_name)" ]] || die "$name is the active login"
   login_dir=$(mktemp -d "$store/login.XXXXXX")
   seed_config "$login_dir"
   echo "Sign in as $name in the browser. Every session keeps its account meanwhile."
-  if ! CLAUDE_CONFIG_DIR=$login_dir claude auth login --claudeai || [[ ! -f $login_dir/.credentials.json ]]; then
+  if ! CLAUDE_CONFIG_DIR=$login_dir claude auth login --claudeai || ! has_token "$login_dir/.credentials.json"; then
     die "no login happened; nothing changed"
   fi
   record=$(jq -c '.oauthAccount // empty' "$login_dir/.claude.json")
@@ -261,7 +279,7 @@ add() {
   [[ ! -f $store/$name.account.json || $(jq -r .accountUuid "$store/$name.account.json") == "$uuid" ]] || die "you signed in as $(jq -r .emailAddress <<< "$record"), but $name is $(email_of "$name"); nothing stored"
   # shellcheck disable=SC2016 # $r is a jq variable
   jq_to "$store/$name.account.json" -n --argjson r "$record" '$r'
-  mv -fT "$login_dir/.credentials.json" "$store/$name.credentials.json"
+  move_token "$login_dir/.credentials.json" "$store/$name.credentials.json"
   echo "stored $name ($(email_of "$name")); every session keeps its account"
 }
 
@@ -285,10 +303,11 @@ rename_account() {
   check_name "$old"
   check_name "$new"
   [[ -f $store/$old.account.json ]] || die "no stored account '$old' (stored: $(stored_names | xargs))"
-  [[ ! -e $store/$new.account.json && ! -e $store/$new.credentials.json ]] || die "$new is already taken"
+  [[ ! -e $store/$new.account.json ]] || die "$new is already taken"
+  ! has_token "$store/$new.credentials.json" || die "$new is already taken"
   lock_all
-  mv -T "$store/$old.account.json" "$store/$new.account.json"
-  if [[ -f $store/$old.credentials.json ]]; then mv -T "$store/$old.credentials.json" "$store/$new.credentials.json"; fi
+  mv "$store/$old.account.json" "$store/$new.account.json"
+  if has_token "$store/$old.credentials.json"; then move_token "$store/$old.credentials.json" "$store/$new.credentials.json"; fi
   unlock_all
   echo "renamed $old to $new"
 }
@@ -328,12 +347,14 @@ jq_to() {
   local dest=$1
   shift
   jq "$@" > "$dest.tmp.$$"
-  mv -fT "$dest.tmp.$$" "$dest"
+  mv -f "$dest.tmp.$$" "$dest"
 }
 
+# The lock folders Claude Code takes around a token refresh, a token write and a config write.
 lock_all() {
-  local lock
-  for lock in "${locks[@]}"; do take_lock "$lock"; done
+  local lock real
+  real=$(cd -P "$claude_dir" 2> /dev/null && pwd -P) || real=$claude_dir
+  for lock in "$claude_dir/.oauth_refresh.lock" "$real.lock" "$claude_dir/.storage-write.lock" "$config.lock"; do take_lock "$lock"; done
 }
 
 # mkdir is the lock, as in Claude Code's lock library, which counts a lock untouched for 60 s as stale.
@@ -344,7 +365,7 @@ take_lock() {
       held+=("$lock")
       return 0
     fi
-    if (($(date +%s) - $(stat -c %Y "$lock" 2> /dev/null || date +%s) > 60)); then rm -rf "$lock"; fi
+    if (($(date +%s) - $(file_time "$lock" || date +%s) > 60)); then rm -rf "$lock"; fi
     sleep 0.1
   done
   die "$lock is held by another process; try again in a minute"
@@ -352,7 +373,7 @@ take_lock() {
 
 unlock_all() {
   local lock
-  for lock in "${held[@]}"; do rmdir "$lock" 2> /dev/null || true; done
+  for lock in ${held[@]+"${held[@]}"}; do rmdir "$lock" 2> /dev/null || true; done
   held=()
 }
 
@@ -360,8 +381,84 @@ unlock_all() {
 # Claude Code may have made beside it.
 cleanup() {
   unlock_all
+  if [[ -n $login_dir && -n $keychain_user ]]; then keychain_delete "$login_dir/.credentials.json" || true; fi
   if [[ -n $login_dir ]]; then rm -rf "$login_dir" "$login_dir.lock"; fi
 }
+
+# GNU stat first: BSD stat refuses -c, while GNU stat reads -f as something else.
+file_mode() { stat -c %a "$1" 2> /dev/null || stat -f %Lp "$1" 2> /dev/null; }
+file_time() { stat -c %Y "$1" 2> /dev/null || stat -f %m "$1" 2> /dev/null; }
+
+# A token's place is named by a file path. On Linux it is that file; on macOS the path picks a
+# Keychain item, because a token kept beside the Keychain would be less protected than the one in it.
+has_token() {
+  if [[ -z $keychain_user ]]; then
+    [[ -f $1 ]]
+  else
+    security find-generic-password -a "$keychain_user" -s "$(keychain_service "$1")" > /dev/null 2>&1
+  fi
+}
+
+read_token() {
+  local value
+  if [[ -z $keychain_user ]]; then
+    cat "$1"
+    return
+  fi
+  value=$(security find-generic-password -a "$keychain_user" -s "$(keychain_service "$1")" -w) || return 1
+  # security prints a value with non-ASCII characters as hex.
+  if [[ $value =~ ^[0-9a-f]+$ ]]; then value=$(printf %s "$value" | xxd -r -p) || return 1; fi
+  printf '%s\n' "$value"
+}
+
+# No atomic rename in the Keychain: the old place goes only once the new one reads back correctly.
+move_token() {
+  local value
+  if [[ -z $keychain_user ]]; then
+    mv -f "$1" "$2"
+    return
+  fi
+  value=$(read_token "$1")
+  keychain_write "$2" "$value"
+  keychain_delete "$1" || die "could not remove the old copy in '$(keychain_service "$1")'"
+}
+
+remove_command() {
+  if [[ -z $keychain_user ]]; then
+    echo "rm $1"
+  else
+    echo "security delete-generic-password -a $keychain_user -s \"$(keychain_service "$1")\""
+  fi
+}
+
+# The item Claude Code uses for a config folder: a plain name for its default folder, and a hash
+# of the path as written, not resolved, for one named by CLAUDE_CONFIG_DIR. Stored tokens are clacc's own.
+keychain_service() {
+  if [[ $1 == "$token" && -z $global ]]; then
+    echo "Claude Code-credentials"
+  elif [[ $1 == */.credentials.json ]]; then
+    echo "Claude Code-credentials-$(printf %s "${1%/.credentials.json}" | shasum -a 256 | cut -c1-8)"
+  else
+    echo "clacc $1"
+  fi
+}
+
+# Through stdin no other process can see the token, but security -i cuts a line beyond 4 KB and
+# stores the rest, so a longer one has to go on the command line. A login with MCP tokens is longer.
+keychain_write() {
+  local service hex line
+  service=$(keychain_service "$1")
+  hex=$(printf %s "$2" | xxd -p | tr -d '\n')
+  line="add-generic-password -U -a \"$keychain_user\" -s \"$service\" -X \"$hex\""
+  if ((${#line} <= 4032)); then
+    printf '%s\n' "$line" | security -i > /dev/null
+  else
+    security add-generic-password -U -a "$keychain_user" -s "$service" -X "$hex"
+  fi
+  [[ $(read_token "$1") == "$2" ]] || die "the Keychain did not store the token in '$service'"
+}
+
+keychain_delete() { security delete-generic-password -a "$keychain_user" -s "$(keychain_service "$1")" > /dev/null 2>&1; }
 
 warn() { echo "clacc: $*" >&2; }
 

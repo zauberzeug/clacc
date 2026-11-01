@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Stand-in for macOS's security, with a Keychain of files in $HOME/keychain. It behaves as the real
+# one was seen to: -w prints a value with non-ASCII characters as hex, a missing item exits 44, and
+# security -i cuts a line beyond 4 KB and stores the rest. Every call is logged to $HOME/security.log
+# without its values. STUB_KEYCHAIN=dropping drops writes without an error; locked refuses every
+# read of a value and every write.
+LC_ALL=C
+dir=$HOME/keychain
+mkdir -p "$dir"
+if [[ -z ${STUB_FROM_STDIN:-} ]]; then
+  for word in "$@"; do
+    case $word in -* | *-generic-password) printf '%s ' "$word" ;; esac
+  done >> "$HOME/security.log"
+  echo >> "$HOME/security.log"
+fi
+
+if [[ ${1:-} == -i ]]; then
+  IFS= read -r line
+  if ((${#line} > 4096)); then
+    line=${line:0:4090}\"
+    cut=1
+  fi
+  eval "STUB_FROM_STDIN=1 \"\$0\" $line"
+  code=$?
+  exit $((cut ? 1 : code))
+fi
+
+command=$1
+shift
+account="" service="" print="" value=""
+while (($#)); do
+  case $1 in
+    -a) account=$2; shift ;;
+    -s) service=$2; shift ;;
+    -w)
+      if [[ $command == find-generic-password ]]; then print=1; else value=$2; shift; fi
+      ;;
+    -X) value=$(printf %s "$2" | xxd -r -p); shift ;;
+    -U) ;;
+    *) ;;
+  esac
+  shift
+done
+file=$dir/$account:${service//\//_}
+
+case $command in
+  find-generic-password)
+    if [[ ! -f $file ]]; then
+      echo "security: The specified item could not be found in the keychain." >&2
+      exit 44
+    fi
+    if [[ -z $print ]]; then exit 0; fi
+    if [[ ${STUB_KEYCHAIN:-} == locked ]]; then
+      echo "security: User interaction is not allowed." >&2
+      exit 36
+    fi
+    if [[ $(< "$file") == *[^\ -~]* ]]; then xxd -p "$file" | tr -d '\n'; echo; else cat "$file"; fi
+    ;;
+  add-generic-password)
+    case ${STUB_KEYCHAIN:-} in
+      dropping) exit 0 ;;
+      locked)
+        echo "security: User interaction is not allowed." >&2
+        exit 36
+        ;;
+    esac
+    printf '%s\n' "$value" > "$file"
+    ;;
+  delete-generic-password)
+    if [[ ! -f $file ]]; then exit 44; fi
+    rm "$file"
+    echo "password has been deleted." >&2
+    ;;
+  dump-keychain) ls "$dir" ;;
+  *) exit 2 ;;
+esac

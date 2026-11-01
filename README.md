@@ -30,12 +30,17 @@ have signed in to once, and swaps them in place.
 
 ## Install
 
-clacc is a single bash script. It needs Linux, [jq](https://jqlang.org) and Claude Code.
+clacc is a single bash script. It needs Linux or macOS, [jq](https://jqlang.org) and Claude Code.
 
 ```sh
+mkdir -p ~/.local/bin
 curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/clacc -o ~/.local/bin/clacc
 chmod +x ~/.local/bin/clacc
+clacc --help
 ```
+
+If your shell then cannot find `clacc`, add `~/.local/bin` to your `PATH`. Download from this raw
+URL: the page at `github.com/zauberzeug/clacc/blob/main/clacc` is HTML, not the script.
 
 Or clone this repository and link `clacc` into a folder on your `PATH`.
 
@@ -67,6 +72,11 @@ around refreshing a token, writing a token and writing its config. It moves the 
 `~/.clacc`, renames the other account's token into its place and swaps the account record. Running
 sessions pick up the new token at their next request.
 
+**On macOS.** Claude Code keeps each login in the Keychain instead of a file, and clacc keeps the
+tokens it stores there too. A running session rereads its Keychain item every 30 seconds, so a
+request within that time still runs on the previous account. A login item also holds the sign-ins
+to MCP servers, so those switch with the account.
+
 **One session on its own.** `clacc run <name>` starts Claude Code with `CLAUDE_CONFIG_DIR` set to
 `~/.clacc/<name>.local`. That folder holds a login and a `.claude.json` of its own, and links to
 `~/.claude` for skills, plugins, projects with their memory, and history, so the session works like
@@ -83,14 +93,17 @@ next start.
 
 **Care with tokens.** When Claude Code refreshes a token, the server can hand out a new refresh
 token and retire the old one, so a copy of a login can stop working at the next refresh. clacc
-never copies a login: each one lives in exactly one file, readable by you only.
+never keeps a copy of a login: each one lives in exactly one file readable by you only, or on macOS
+in one Keychain item. The Keychain has no atomic rename, so there clacc removes the old item only
+once the new one reads back correctly. A token too long for the standard input of `security`, as a
+login with MCP sign-ins often is, goes on its command line, where other processes on the machine
+can read it for a moment.
 
 ## Good to know
 
 - clacc relies on how Claude Code stores and reloads its login. That is not a documented
-  interface, and an update can change it. clacc was written against Claude Code 2.1.316. After an
-  update, run the tests and one switch.
-- Linux only for now. On macOS, Claude Code keeps the login in the Keychain.
+  interface, and an update can change it. clacc was written against Claude Code 2.1.316, and its
+  macOS part against 2.1.303. After an update, run the tests and one switch.
 - Prompt cache, artifacts and remote sessions belong to an account. After a switch, a session's
   first request cannot reuse the previous account's cache, and pages published from the other
   account are out of sight.
@@ -99,7 +112,8 @@ never copies a login: each one lives in exactly one file, readable by you only.
 
 ## Tests
 
-`tests/run.sh` runs clacc against a stand-in for `claude` in a throwaway home folder.
+`tests/run.sh` runs clacc against stand-ins for `claude` and the Keychain in a throwaway home folder,
+on either system.
 `tests/mutants.sh` breaks each safeguard in turn and checks that the tests notice.
 
 ## License

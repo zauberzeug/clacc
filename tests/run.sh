@@ -7,8 +7,16 @@
 set -uo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 script=${CLACC:-$(cd "$here/.." && pwd)/clacc}
-HOME=$(mktemp -d)
+HOME=$(cd "$(mktemp -d)" && pwd -P)
 export HOME
+# The stand-ins come first in every call, so that no test can reach the real Keychain.
+real_os=$(uname -s)
+PATH=$here/stub:$PATH
+export PATH
+[[ $(command -v security) == "$here/stub/security" ]] || exit 1
+export USER=tester
+# The script's choice of token store follows uname, so every check below runs on either system.
+export STUB_UNAME=Linux
 trap 'rm -rf "$HOME"' EXIT
 unset CLAUDE_CONFIG_DIR CLAUDE_SECURESTORAGE_CONFIG_DIR CLACC_HOME CLACC_CLAUDE_CONFIG_DIR
 S=$HOME/.clacc
@@ -34,20 +42,30 @@ setup() {
   echo '{"accountUuid":"aaaaaaaa-0000-0000-0000-000000000000","emailAddress":"a@x"}' > "$S/alpha.account.json"
   echo '{"accountUuid":"bbbbbbbb-0000-0000-0000-000000000000","emailAddress":"b@x","organizationUuid":"org-b","organizationName":"org-b"}' > "$S/beta.account.json"
   echo '{"claudeAiOauth":{"accessToken":"tokB","refreshToken":"refB"}}' > "$S/beta.credentials.json"
-  touch -d '1 hour ago' "$HOME/.claude/.credentials.json"
+  touch -t 202001010000 "$HOME/.claude/.credentials.json"
 }
 
 tok() { jq -r .claudeAiOauth.accessToken "$1"; }
 active_tok() { tok "$HOME/.claude/.credentials.json"; }
 rec() { jq -r .oauthAccount.emailAddress "$HOME/.claude.json"; }
-sum() { sha256sum "$1" | cut -d" " -f1; }
+sum() { cksum < "$1"; }
+mode() { stat -c %a "$1" 2> /dev/null || stat -f %Lp "$1"; }
+links() { stat -c %h "$1" 2> /dev/null || stat -f %l "$1"; }
+mtime() { stat -c %Y "$1" 2> /dev/null || stat -f %m "$1"; }
 last_log() { tail -n 1 "$HOME/stub.log"; }
 # What a plain /login leaves behind: the account record of an account clacc may not know yet.
 manual_login() { jq '.oauthAccount = {accountUuid: "cccccccc-0000-0000-0000-000000000000", emailAddress: "c@x"}' "$HOME/.claude.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude.json"; }
-no_locks() { [[ ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $(realpath -m "$HOME/.claude").lock && ! -e $HOME/.claude/.storage-write.lock && ! -e $HOME/.claude.json.lock ]]; }
-run() { out=$(PATH=$here/stub:$PATH "$script" "$@" 2>&1); code=$?; }
+no_locks() { [[ ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.lock && ! -e $HOME/.claude/.storage-write.lock && ! -e $HOME/.claude.json.lock ]]; }
+run() { out=$("$script" "$@" 2>&1); code=$?; }
 # Run in a pseudo-terminal, as from a person's terminal.
-run_tty() { out=$(PATH=$here/stub:$PATH script -qec "$(printf '%q ' "$script" "$@")" /dev/null 2>&1); code=$?; }
+run_tty() {
+  if [[ $real_os == Darwin ]]; then
+    out=$(script -q /dev/null "$script" "$@" < /dev/null 2>&1)
+  else
+    out=$(script -qec "$(printf '%q ' "$script" "$@")" /dev/null 2>&1)
+  fi
+  code=$?
+}
 
 echo "--- status"
 setup
@@ -66,8 +84,10 @@ run --help
 check "--help prints the commands and exits 0" '[[ $code == 0 && $out == *"clacc switch <name>"* && $out == *"clacc run <name> [args...]"*"passing args to claude"* ]]'
 run --bogus
 check "a wrong option prints the commands and exits 2" '[[ $code == 2 && $out == *"clacc add <name>"* ]]'
-STUB_UNAME=Darwin run
-check "anything but Linux is refused" '[[ $code == 1 && $out == *"needs Linux"* ]]'
+STUB_UNAME=FreeBSD run
+check "anything but Linux and macOS is refused" '[[ $code == 1 && $out == *"needs Linux or macOS"* ]]'
+STUB_UNAME=FreeBSD run --help
+check "--help works on anything else too" '[[ $code == 0 && $out == *"clacc switch <name>"* ]]'
 
 echo "--- switch alpha -> beta"
 run switch beta
@@ -77,10 +97,10 @@ check "alpha token parked" '[[ $(tok "$S/alpha.credentials.json") == tokA ]]'
 check "beta no longer parked (one copy only)" '[[ ! -e $S/beta.credentials.json ]]'
 check "account record is beta" '[[ $(rec) == b@x ]]'
 check "rest of ~/.claude.json kept" '[[ $(jq -c "[.numStartups, .projects.p.hasTrustDialogAccepted]" "$HOME/.claude.json") == "[5,true]" ]]'
-check "active token mode 600, single link" '[[ $(stat -c "%a %h" "$HOME/.claude/.credentials.json") == "600 1" ]]'
-check "parked token mode 600, single link" '[[ $(stat -c "%a %h" "$S/alpha.credentials.json") == "600 1" ]]'
-check ".claude.json mode 600" '[[ $(stat -c %a "$HOME/.claude.json") == 600 ]]'
-check "active token has a fresh modification time" '(( $(date +%s) - $(stat -c %Y "$HOME/.claude/.credentials.json") < 5 ))'
+check "active token mode 600, single link" '[[ $(mode "$HOME/.claude/.credentials.json") == 600 && $(links "$HOME/.claude/.credentials.json") == 1 ]]'
+check "parked token mode 600, single link" '[[ $(mode "$S/alpha.credentials.json") == 600 && $(links "$S/alpha.credentials.json") == 1 ]]'
+check ".claude.json mode 600" '[[ $(mode "$HOME/.claude.json") == 600 ]]'
+check "active token has a fresh modification time" '(( $(date +%s) - $(mtime "$HOME/.claude/.credentials.json") < 5 ))'
 check "no lock left behind" no_locks
 check "no temp file left behind" '[[ -z $(find "$HOME" -name "*.tmp.*") ]]'
 
@@ -108,13 +128,13 @@ check "missing token points to add" '[[ $code == 1 && $out == *"clacc add beta"*
 
 echo "--- a lock held by a live process"
 setup
-mkdir "$(realpath -m "$HOME/.claude").lock"
+mkdir "$HOME/.claude.lock"
 start=$(date +%s)
 run switch beta
 check "waits, then gives up" '[[ $code == 1 && $out == *"held by another process"* ]] && (( $(date +%s) - start >= 9 ))'
 check "nothing switched" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
-check "the other process keeps its lock, ours are released" '[[ -d $(realpath -m "$HOME/.claude").lock && ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.json.lock ]]'
-rmdir "$(realpath -m "$HOME/.claude").lock"
+check "the other process keeps its lock, ours are released" '[[ -d $HOME/.claude.lock && ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.json.lock ]]'
+rmdir "$HOME/.claude.lock"
 
 echo "--- a token write in progress"
 setup
@@ -126,8 +146,8 @@ rmdir "$HOME/.claude/.storage-write.lock"
 
 echo "--- a stale lock (untouched for 2 minutes)"
 setup
-mkdir "$(realpath -m "$HOME/.claude").lock"
-touch -d '2 minutes ago' "$(realpath -m "$HOME/.claude").lock"
+mkdir "$HOME/.claude.lock"
+touch -t 202001010000 "$HOME/.claude.lock"
 run switch beta
 check "stale lock cleared, switch done" '[[ $code == 0 && $(active_tok) == tokB ]] && no_locks'
 
@@ -208,7 +228,7 @@ check "no login yet and no terminal: refused" '[[ $code == 1 && $out == *"no log
 check "its config has no account record, no account caches, the rest kept" '[[ $(jq -c "[.oauthAccount, .cachedGrowthBookFeatures, .groveConfigCache, .numStartups, .hasCompletedOnboarding, .projects.p.hasTrustDialogAccepted, .projects.p.hasUnseenTeamArtifacts]" "$L/.claude.json") == "[null,null,null,5,true,true,null]" ]]'
 check "projects with memory, skills and CLAUDE.md are links to ~/.claude" '[[ -L $L/projects && $(cat "$L/projects/p/memory/m.md") == "memory note" && -L $L/skills && -L $L/CLAUDE.md ]]'
 check "settings.json is a file of its own with the shared settings" '[[ -f $L/settings.json && ! -L $L/settings.json && $(jq -c . "$L/settings.json") == "{\"model\":\"opus\"}" ]]'
-check "folder and config readable by you only" '[[ $(stat -c %a "$L") == 700 && $(stat -c %a "$L/.claude.json") == 600 ]]'
+check "folder and config readable by you only" '[[ $(mode "$L") == 700 && $(mode "$L/.claude.json") == 600 ]]'
 STUB_LOGIN=b run_tty run beta --resume x
 check "first start in a terminal: exit 0" '[[ $code == 0 ]]'
 check "signed in there, the stored email filled in" '[[ $(grep "^auth" "$HOME/stub.log" | tail -n 1) == "auth config=$L secure=unset global= args=auth login --claudeai --email b@x" ]]'
@@ -252,7 +272,7 @@ check "and never reaches the shared settings" '[[ $(jq -c . "$HOME/.claude/setti
 jq '.theme = "dark"' "$L/settings.json" > "$HOME/x" && mv "$HOME/x" "$L/settings.json"
 run run beta
 check "any other change a session made goes back to the shared settings" '[[ $code == 0 && $(jq -c . "$HOME/.claude/settings.json") == "{\"model\":\"opus\",\"theme\":\"dark\"}" && $(jq -r .model "$L/settings.json") == team-model ]]'
-check "and the shared file keeps its permissions" '[[ $(stat -c %a "$HOME/.claude/settings.json") == 644 ]]'
+check "and the shared file keeps its permissions" '[[ $(mode "$HOME/.claude/settings.json") == 644 ]]'
 jq '.env = {"X": "1"}' "$HOME/.claude/settings.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude/settings.json"
 run run beta
 check "a shared change reaches the folder, its own model stays" '[[ $(jq -c "[.env.X, .model, .theme]" "$L/settings.json") == "[\"1\",\"team-model\",\"dark\"]" ]]'
@@ -315,6 +335,15 @@ check "and a session from the default folder sees the default one" '[[ $out == *
 CLAUDE_CONFIG_DIR=$S/beta.local run
 check "a run folder alone in CLAUDE_CONFIG_DIR, as in a spawned helper, means the default one" '[[ $out == *"active: alpha (a@x)"* ]]'
 
+echo "--- a config folder reached through a link"
+setup
+ln -s "$HOME/.claude" "$HOME/link"
+echo '{"oauthAccount":{"accountUuid":"aaaaaaaa-0000-0000-0000-000000000000","emailAddress":"a@x"}}' > "$HOME/.claude/.claude.json"
+mkdir "$HOME/.claude.lock"
+CLAUDE_CONFIG_DIR=$HOME/link run switch beta
+check "the lock beside the folder goes by its real path" '[[ $code == 1 && $out == *".claude.lock is held"* ]]'
+rmdir "$HOME/.claude.lock"
+
 echo "--- rename"
 setup
 run rename beta work
@@ -334,6 +363,115 @@ check "a command word is a fine name, since a name always follows a command" '[[
 run switch run
 check "and can be switched to" '[[ $code == 0 && $(active_tok) == tokA && $(rec) == a@x ]]'
 check "no lock left behind" no_locks
+
+echo "--- macOS: every login in the Keychain"
+export STUB_UNAME=Darwin
+active=Claude\ Code-credentials
+stored() { echo "clacc $S/$1.credentials.json"; }
+folder() { echo "Claude Code-credentials-$(printf %s "$1" | shasum -a 256 | cut -c1-8)"; }
+item() { security find-generic-password -a tester -s "$1" -w 2> /dev/null; }
+item_tok() { item "$1" | jq -r .claudeAiOauth.accessToken; }
+has_item() { security find-generic-password -a tester -s "$1" > /dev/null 2>&1; }
+put_item() { security add-generic-password -U -a tester -s "$1" -w "$2"; }
+no_token_files() { [[ -z $(find "$HOME/.claude" "$S" -name "*credentials*") ]]; }
+setup_keychain() {
+  setup
+  rm "$HOME/.claude/.credentials.json" "$S/beta.credentials.json"
+  put_item "$active" '{"claudeAiOauth":{"accessToken":"tokA","refreshToken":"refA"}}'
+  put_item "$(stored beta)" '{"claudeAiOauth":{"accessToken":"tokB","refreshToken":"refB"}}'
+}
+
+setup_keychain
+run
+check "status finds the login and the stored token" '[[ $code == 0 && $out == *"active: alpha (a@x)"* && $out == *"stored: beta (b@x)"* && $out != *"no token"* ]]'
+: > "$HOME/security.log"
+run switch beta
+check "switch: exit 0, it says how soon sessions follow, and nothing of security shows" '[[ $code == 0 && $out == *"follow within 30 seconds"* && $out != *"deleted"* ]]'
+check "active item is beta" '[[ $(item_tok "$active") == tokB && $(rec) == b@x ]]'
+check "alpha parked in the Keychain" '[[ $(item_tok "$(stored alpha)") == tokA ]]'
+check "beta no longer parked (one copy only)" '! has_item "$(stored beta)"'
+check "no token in any file" no_token_files
+check "a short token never on a command line" '[[ $(grep -c -- "-X" "$HOME/security.log") == 0 ]]'
+check "no lock left behind" no_locks
+run switch alpha
+check "and back" '[[ $code == 0 && $(item_tok "$active") == tokA && $(item_tok "$(stored beta)") == tokB && ! $(has_item "$(stored alpha)" && echo yes) ]]'
+
+echo "--- macOS: what a login item can hold"
+setup_keychain
+long=$(printf 'x%.0s' $(seq 1 3300))
+put_item "$active" "{\"claudeAiOauth\":{\"accessToken\":\"tokA\"},\"mcpOAuth\":\"$long\"}"
+before=$(item "$active")
+run switch beta
+check "a login beyond the 4 KB of security -i arrives whole" '[[ $code == 0 && $(item "$(stored alpha)") == "$before" ]]'
+run switch alpha
+check "in both directions" '[[ $code == 0 && $(item "$active") == "$before" ]]'
+setup_keychain
+put_item "$(stored beta)" '{"claudeAiOauth":{"accessToken":"tokÜ"}}'
+run switch beta
+check "a token that security prints as hex arrives readable" '[[ $code == 0 && $(LC_ALL=C item "$active") =~ ^[0-9a-f]+$ && $(item "$active" | xxd -r -p | jq -r .claudeAiOauth.accessToken) == tokÜ ]]'
+
+echo "--- macOS: refusals change nothing"
+setup_keychain
+put_item "$(stored beta)" 'not json'
+run switch beta
+check "unreadable token refused" '[[ $code == 1 && $out == *"unreadable"* && $(item_tok "$active") == tokA && $(rec) == a@x ]]'
+setup_keychain
+STUB_KEYCHAIN=dropping run switch beta
+check "a write the Keychain drops stops the switch" '[[ $code == 1 && $out == *"did not store"* && $(rec) == a@x ]]'
+check "and loses no token" '[[ $(item_tok "$active") == tokA && $(item_tok "$(stored beta)") == tokB ]]'
+STUB_KEYCHAIN=locked run switch beta
+check "a locked Keychain stops the switch" '[[ $code == 1 && $(rec) == a@x && $(item_tok "$active") == tokA && $(item_tok "$(stored beta)") == tokB ]]'
+check "no lock left after a refusal" no_locks
+security delete-generic-password -a tester -s "$active" > /dev/null
+run switch beta
+check "no login at all is reported" '[[ $code == 1 && $out == *"no active login"* ]]'
+
+echo "--- macOS: add"
+setup_keychain
+STUB_LOGIN=d run add delta
+check "the token moves to its stored item" '[[ $code == 0 && $(item_tok "$(stored delta)") == tokD ]]'
+check "the item of the login folder is gone" '[[ $(security dump-keychain | grep -c "Claude Code-credentials-") == 0 ]]'
+check "the active login untouched, no token file" '[[ $(item_tok "$active") == tokA ]] && no_token_files'
+run switch delta
+check "can switch to the added account" '[[ $code == 0 && $(item_tok "$active") == tokD && $(rec) == d@x ]]'
+setup_keychain
+STUB_LOGIN=b run add beta
+check "add of a name with a token refused" '[[ $code == 1 && $out == *"already stored"* ]]'
+STUB_LOGIN=b run add epsilon
+check "signing in as a stored account refused" '[[ $code == 1 && $out == *"already stored as beta"* ]]'
+check "and its login item removed" '[[ $(security dump-keychain | grep -c "Claude Code-credentials-") == 0 ]]'
+
+echo "--- macOS: run"
+setup_keychain
+L=$S/beta.local
+STUB_LOGIN=b run_tty run beta -c
+check "the first start signs in, then the session starts" '[[ $code == 0 && $(grep -c "^auth" "$HOME/stub.log") == 1 && $(last_log) == "session config=$L secure=unset global= args=-c" ]]'
+check "its login is the item of its folder" '[[ $(item_tok "$(folder "$L")") == tokB2 ]] && no_token_files'
+check "the other logins untouched" '[[ $(item_tok "$active") == tokA && $(item_tok "$(stored beta)") == tokB ]]'
+STUB_LOGIN=none run run beta -c
+check "a later start needs no terminal and no login" '[[ $code == 0 && $(grep -c "^auth" "$HOME/stub.log") == 1 ]]'
+setup_keychain
+STUB_LOGIN=d run_tty run beta
+check "a login of another account starts no session and names the command to remove it" '[[ $code == 1 && $out == *"security delete-generic-password -a tester -s \"$(folder "$L")\""* && $(grep -c "^session" "$HOME/stub.log") == 0 ]]'
+
+echo "--- macOS: rename"
+setup_keychain
+run rename beta work
+check "rename moves the stored item" '[[ $code == 0 && $(item_tok "$(stored work)") == tokB ]] && ! has_item "$(stored beta)"'
+put_item "$(stored taken)" '{}'
+run rename work taken
+check "a name with a token is taken" '[[ $code == 1 && $out == *"already taken"* && $(item_tok "$(stored work)") == tokB ]]'
+
+echo "--- macOS: Claude Code in another folder (CLAUDE_CONFIG_DIR)"
+setup_keychain
+C=$HOME/custom
+mkdir -p "$C"
+echo '{"oauthAccount":{"accountUuid":"aaaaaaaa-0000-0000-0000-000000000000","emailAddress":"a@x"}}' > "$C/.claude.json"
+put_item "$(folder "$C")" '{"claudeAiOauth":{"accessToken":"tokC"}}'
+CLAUDE_CONFIG_DIR=$C run switch beta
+check "the switch works on that folder's item" '[[ $code == 0 && $(item_tok "$(folder "$C")") == tokB && $(item_tok "$(stored alpha)") == tokC ]]'
+check "and leaves the default item alone" '[[ $(item_tok "$active") == tokA && $(rec) == a@x ]]'
+export STUB_UNAME=Linux
 
 echo "--- $fails of $checks checks failed"
 exit $((fails > 0))

@@ -2,8 +2,9 @@
 # Stand-in for claude. `claude auth login` signs in as STUB_LOGIN: the active account (a), the
 # stored one (b), the stored one without an organisation recorded yet (b0), the stored one in
 # another organisation (b2), a new one (d), or none (the login fails). It writes where the real
-# one does: the token into the token folder, the account record into the config file. Every
-# call is logged to $HOME/stub.log with the folders it would use.
+# one does: the token into the token folder, or on macOS into the Keychain item of the config
+# folder, and the account record into the config file. Every call is logged to $HOME/stub.log
+# with the folders it would use.
 dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
 cfg=${CLAUDE_CONFIG_DIR:+$CLAUDE_CONFIG_DIR/.claude.json}
 cfg=${cfg:-$HOME/.claude.json}
@@ -20,7 +21,13 @@ case "${STUB_LOGIN:-none}" in
   *) exit 1 ;;
 esac
 dir=${CLAUDE_SECURESTORAGE_CONFIG_DIR:-$dir}
-echo "{\"claudeAiOauth\":{\"accessToken\":\"$tok\",\"refreshToken\":\"r$tok\"}}" > "$dir/.credentials.json"
+login="{\"claudeAiOauth\":{\"accessToken\":\"$tok\",\"refreshToken\":\"r$tok\"}}"
+if [[ $(uname -s) == Darwin ]]; then
+  service="Claude Code-credentials${CLAUDE_CONFIG_DIR:+-$(printf %s "$CLAUDE_CONFIG_DIR" | shasum -a 256 | cut -c1-8)}"
+  security add-generic-password -U -a "$USER" -s "$service" -w "$login"
+else
+  echo "$login" > "$dir/.credentials.json"
+fi
 # shellcheck disable=SC2016 # $u, $e and $o are jq variables
 jq --arg u "$uuid" --arg e "$email" --arg o "${org:-}" \
   '.oauthAccount = {accountUuid: $u, emailAddress: $e} + (if $o == "" then {} else {organizationUuid: $o, organizationName: $o} end)' \

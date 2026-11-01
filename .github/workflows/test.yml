@@ -6,10 +6,15 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Lint
+        if: runner.os == 'Linux'
         run: shellcheck clacc tests/*.sh tests/stub/*
       - name: Test
         run: tests/run.sh
