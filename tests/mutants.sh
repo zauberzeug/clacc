@@ -33,6 +33,9 @@ declare -A mutant=(
   [run-keeps-double-dash]='/^  if \[\[ \${1:-} == -- \]\]; then shift; fi$/d'
   [shared-settings-lose-permissions]='/^    chmod "\$mode" "\$shared"$/d'
   [bare-name-switches]='s|^      usage$|      switch "$1"|'
+  [name-refuses-a-dot]='s|\[a-z0-9._-\]|[a-z0-9_-]|'
+  [name-may-begin-with-a-dot]='s|=~ ^\[a-z0-9\]|=~ ^[a-z0-9.]|'
+  [name-may-hold-a-slash]='s|\[a-z0-9._-\]|[a-z0-9._/-]|'
 )
 
 for name in "${!mutant[@]}"; do

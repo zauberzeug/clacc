@@ -42,6 +42,8 @@ active_tok() { tok "$HOME/.claude/.credentials.json"; }
 rec() { jq -r .oauthAccount.emailAddress "$HOME/.claude.json"; }
 sum() { sha256sum "$1" | cut -d" " -f1; }
 last_log() { tail -n 1 "$HOME/stub.log"; }
+# What a plain /login leaves behind: the account record of an account clacc may not know yet.
+manual_login() { jq '.oauthAccount = {accountUuid: "cccccccc-0000-0000-0000-000000000000", emailAddress: "c@x"}' "$HOME/.claude.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude.json"; }
 no_locks() { [[ ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $(realpath -m "$HOME/.claude").lock && ! -e $HOME/.claude/.storage-write.lock && ! -e $HOME/.claude.json.lock ]]; }
 run() { out=$(PATH=$here/stub:$PATH "$script" "$@" 2>&1); code=$?; }
 # Run in a pseudo-terminal, as from a person's terminal.
@@ -131,7 +133,7 @@ check "stale lock cleared, switch done" '[[ $code == 0 && $(active_tok) == tokB 
 
 echo "--- a manual /login to an unknown account"
 setup
-jq '.oauthAccount = {accountUuid: "cccccccc-0000-0000-0000-000000000000", emailAddress: "c@x"}' "$HOME/.claude.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude.json"
+manual_login
 run switch beta
 check "switch refused, asks to save" '[[ $code == 1 && $out == *"not stored"* && $(active_tok) == tokA ]]'
 run save alpha
@@ -140,6 +142,32 @@ run save gamma
 check "save gamma" '[[ $code == 0 && $(jq -r .emailAddress "$S/gamma.account.json") == c@x ]]'
 run
 check "status now says gamma" '[[ $out == *"active: gamma (c@x)"* && $out == *"stored: alpha (a@x), no token"* ]]'
+
+echo "--- a name with dots, such as a mail domain"
+setup
+manual_login
+run save acme.de
+check "save under a name with a dot" '[[ $code == 0 && $(jq -r .emailAddress "$S/acme.de.account.json") == c@x ]]'
+check "saving leaves the token where it is" '[[ $(active_tok) == tokA && ! -e $S/acme.de.credentials.json ]]'
+run
+check "status names it as active" '[[ $out == *"active: acme.de (c@x)"* ]]'
+run switch beta
+check "a switch away parks its token under that name" '[[ $code == 0 && $(active_tok) == tokB && $(tok "$S/acme.de.credentials.json") == tokA ]]'
+run
+check "status lists it with its token" '[[ $out == *"stored: acme.de (c@x)"* && $out != *"acme.de (c@x), no token"* ]]'
+run switch acme.de
+check "a switch back by that name" '[[ $code == 0 && $(active_tok) == tokA && $(rec) == c@x && ! -e $S/acme.de.credentials.json ]]'
+run rename beta mail.acme.de
+check "rename to a name with two dots" '[[ $code == 0 && -f $S/mail.acme.de.account.json && $(tok "$S/mail.acme.de.credentials.json") == tokB ]]'
+STUB_LOGIN=b run_tty run mail.acme.de -c
+check "a run session under it keeps the whole name in its folder" '[[ $code == 0 && $(last_log) == "session config=$S/mail.acme.de.local secure=unset global= args=-c" ]]'
+run
+check "and status shows that folder under the whole name" '[[ $out == *"local:  mail.acme.de (b@x)"* ]]'
+for bad in .hidden .. a/../y; do
+  run save "$bad"
+  check "the name $bad is refused" '[[ $code == 1 && $out == *"use a name of"* ]]'
+done
+check "and none of them stored anything" '[[ -z $(find "$S" -mindepth 1 -maxdepth 1 -name ".*") && ! -e $S/y.account.json ]]'
 
 echo "--- add a new account through a login of its own"
 setup
