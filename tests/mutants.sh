@@ -32,6 +32,8 @@ mutant() {
 mutant park-without-link 's|^  ln -f "\$token" "\$store/\$current.credentials.json"|  :|'
 mutant no-locks 's|^  lock_all$|  :|'
 mutant no-chmod 's|^  chmod 600 "\$store/\$target.credentials.json"|  :|'
+mutant no-fresh-modification-time 's|^  touch "\$store/\$target.credentials.json" .*|  :|'
+mutant lock-gives-up-at-once 's|tries < 100|tries < 1|'
 mutant no-record-swap 's|^  set_record "\$store/\$target.account.json"$|  :|'
 mutant rename-keeps-token 's|^  if has_token "\$store/\$old.credentials.json"; then move_token .*|  :|'
 mutant no-token-write-lock 's| "\$claude_dir/.storage-write.lock"||'

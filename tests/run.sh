@@ -43,7 +43,8 @@ setup() {
   echo '{"accountUuid":"aaaaaaaa-0000-0000-0000-000000000000","emailAddress":"a@x"}' > "$S/alpha.account.json"
   echo '{"accountUuid":"bbbbbbbb-0000-0000-0000-000000000000","emailAddress":"b@x","organizationUuid":"org-b","organizationName":"org-b"}' > "$S/beta.account.json"
   echo '{"claudeAiOauth":{"accessToken":"tokB","refreshToken":"refB"}}' > "$S/beta.credentials.json"
-  touch -t 202001010000 "$HOME/.claude/.credentials.json"
+  touch -t 202001010000 "$HOME/.claude/.credentials.json" "$S/beta.credentials.json"
+  : > "$HOME/sleep.log"
 }
 
 tok() { jq -r .claudeAiOauth.accessToken "$1"; }
@@ -60,6 +61,9 @@ manual_login() { jq '.oauthAccount = {accountUuid: "cccccccc-0000-0000-0000-0000
 expired() { jq '.claudeAiOauth += {expiresAt: 1000, subscriptionType: "team"}' "$1" > "$HOME/x" && mv "$HOME/x" "$1"; }
 field() { jq -r ".claudeAiOauth.$2" "$1"; }
 readings() { grep "^usage" "$HOME/stub.log"; }
+# A lock another process holds right now: it cannot go stale during a wait, however slow the machine is.
+held() { mkdir "$1" && touch -t 209901010000 "$1"; }
+waited() { LC_ALL=C awk '{ s += $1 } END { print int(s) }' "$HOME/sleep.log"; }
 no_locks() { [[ ! -e $S/.lent.lock && ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.lock && ! -e $HOME/.claude/.storage-write.lock && ! -e $HOME/.claude.json.lock ]]; }
 run() { out=$("$script" "$@" 2>&1); code=$?; }
 # Run in a pseudo-terminal, as from a person's terminal.
@@ -105,7 +109,7 @@ check "rest of ~/.claude.json kept" '[[ $(jq -c "[.numStartups, .projects.p.hasT
 check "active token mode 600, single link" '[[ $(mode "$HOME/.claude/.credentials.json") == 600 && $(links "$HOME/.claude/.credentials.json") == 1 ]]'
 check "parked token mode 600, single link" '[[ $(mode "$S/alpha.credentials.json") == 600 && $(links "$S/alpha.credentials.json") == 1 ]]'
 check ".claude.json mode 600" '[[ $(mode "$HOME/.claude.json") == 600 ]]'
-check "active token has a fresh modification time" '(( $(date +%s) - $(mtime "$HOME/.claude/.credentials.json") < 5 ))'
+check "active token has a fresh modification time" '(( $(date +%s) - $(mtime "$HOME/.claude/.credentials.json") < 3600 ))'
 check "no lock left behind" no_locks
 check "no temp file left behind" '[[ -z $(find "$HOME" -name "*.tmp.*") ]]'
 
@@ -133,17 +137,16 @@ check "missing token points to add" '[[ $code == 1 && $out == *"clacc add beta"*
 
 echo "--- a lock held by a live process"
 setup
-mkdir "$HOME/.claude.lock"
-start=$(date +%s)
+held "$HOME/.claude.lock"
 run switch beta
-check "waits, then gives up" '[[ $code == 1 && $out == *"held by another process"* ]] && (( $(date +%s) - start >= 9 ))'
+check "waits ten seconds, then gives up" '[[ $code == 1 && $out == *"held by another process"* ]] && (( $(waited) >= 9 ))'
 check "nothing switched" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 check "the other process keeps its lock, ours are released" '[[ -d $HOME/.claude.lock && ! -e $HOME/.claude/.oauth_refresh.lock && ! -e $HOME/.claude.json.lock ]]'
 rmdir "$HOME/.claude.lock"
 
 echo "--- a token write in progress"
 setup
-mkdir "$HOME/.claude/.storage-write.lock"
+held "$HOME/.claude/.storage-write.lock"
 run switch beta
 check "waits for Claude Code's token-write lock, then gives up" '[[ $code == 1 && $out == *".storage-write.lock is held"* ]]'
 check "nothing switched while a token was being written" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
@@ -382,17 +385,9 @@ check "it comes back even when clacc is stopped right after the renewal" '[[ $co
 
 echo "--- a switch while a parked token is being read"
 setup
-mkdir "$S/.lent.lock"
-(
-  sleep 1
-  touch "$HOME/reading-over"
-  rmdir "$S/.lent.lock"
-) &
-run switch beta
-waited=no
-if [[ -e $HOME/reading-over ]]; then waited=yes; fi
-wait
-check "waits until the reading is over" '[[ $code == 0 && $waited == yes && $(active_tok) == tokB ]]'
+held "$S/.lent.lock"
+STUB_RELEASE=$S/.lent.lock run switch beta
+check "waits until the reading is over" '[[ $code == 0 && -s $HOME/sleep.log && $(active_tok) == tokB ]]'
 
 echo "--- run without a name"
 setup
@@ -444,7 +439,7 @@ echo "--- a config folder reached through a link"
 setup
 ln -s "$HOME/.claude" "$HOME/link"
 echo '{"oauthAccount":{"accountUuid":"aaaaaaaa-0000-0000-0000-000000000000","emailAddress":"a@x"}}' > "$HOME/.claude/.claude.json"
-mkdir "$HOME/.claude.lock"
+held "$HOME/.claude.lock"
 CLAUDE_CONFIG_DIR=$HOME/link run switch beta
 check "the lock beside the folder goes by its real path" '[[ $code == 1 && $out == *".claude.lock is held"* ]]'
 rmdir "$HOME/.claude.lock"

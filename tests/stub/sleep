@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Stand-in for sleep: waits no time and writes the seconds asked for to $HOME/sleep.log, so no check
+# depends on how fast the machine runs. A wait also releases the lock named by STUB_RELEASE.
+echo "$1" >> "$HOME/sleep.log"
+if [[ -n ${STUB_RELEASE:-} ]]; then rmdir "$STUB_RELEASE" 2> /dev/null; fi
+exit 0
