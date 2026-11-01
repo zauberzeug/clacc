@@ -24,7 +24,8 @@ clacc names what it leaves out of the comparison:
 
 With no account readable, or none with anything left, clacc exits with 1 and asks for a name: `clacc <command> <name>`.
 
-A reading goes through the login of the run folder when an account has one, and otherwise through the active login or a parked token (R-031).
+The active account is read through the active login.
+Any other account is read through the login of its run folder when it has one, and otherwise through its parked token (R-031).
 `switch` needs the active login or a parked token, while `run` also takes an account that has only the login of its run folder.
 
 A reading sends no prompt and saves no session, and it runs from the store, away from any project.

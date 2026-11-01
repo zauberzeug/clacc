@@ -13,7 +13,7 @@ Under the locks of R-011, clacc:
 
 1. saves the current record under the name of the active account,
 2. parks the active token under that name,
-3. puts the token of `<name>` in place with a new modification time,
+3. puts the token of `<name>` in place, on Linux with a new modification time,
 4. replaces the record in `.claude.json` and keeps everything else in that file.
 
 A running session reloads its login when the modification time of the file changes, so on Linux it follows at its next request.
