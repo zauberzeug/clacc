@@ -16,4 +16,6 @@ The `settings.json` of a run folder is a file of its own, rebuilt at every start
 - Any other change a session made goes back to the shared settings at the next start, and the shared file keeps its permissions.
 - A setting changed on both sides keeps the shared value, and clacc says so.
 - A folder file that is not valid JSON is reported and rebuilt, and the changes in it are dropped.
+- An empty folder file is rebuilt without a report, because it holds no changes.
+- An empty shared file counts as no shared settings.
 - A link from an earlier version of clacc becomes a file (R-003).

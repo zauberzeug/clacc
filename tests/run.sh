@@ -307,6 +307,30 @@ check "an unreadable folder file is reported, rebuilt and changes nothing shared
 ln -sf "$HOME/.claude/settings.json" "$L/settings.json"
 run run beta
 check "a link from an earlier clacc becomes a file, the shared one untouched" '[[ -f $L/settings.json && ! -L $L/settings.json && $(sum "$HOME/.claude/settings.json") == "$before" ]]'
+: > "$L/settings.json"
+run run beta
+check "an empty folder file is rebuilt without a report, the shared one untouched" '[[ $code == 0 && $out != *"not valid JSON"* && $(sum "$HOME/.claude/settings.json") == "$before" && $(jq -r .model "$L/settings.json") == opus ]]'
+: > "$HOME/.claude/settings.json"
+run run beta
+check "an empty shared file counts as no settings and stays empty" '[[ $code == 0 && $(jq -c . "$L/settings.json") == "{}" && ! -s $HOME/.claude/settings.json ]]'
+
+echo "--- run: the settings stay off every command line (R-032)"
+setup
+# A jq that logs its command line, which is what other processes can read of a call.
+mkdir "$HOME/logged"
+cat > "$HOME/logged/jq" << EOF
+#!/usr/bin/env bash
+echo "\$*" >> "$HOME/jq.log"
+exec "$(command -v jq)" "\$@"
+EOF
+chmod +x "$HOME/logged/jq"
+echo '{"model":"opus","env":{"KEY":"shared-secret"}}' > "$HOME/.claude/settings.json"
+PATH=$HOME/logged:$PATH run run beta --version
+model_pick own-secret
+PATH=$HOME/logged:$PATH run run beta --version
+PATH=$HOME/logged:$PATH run run beta --version
+check "the merge sees the shared settings and the folder's own model" '[[ $code == 0 && $(jq -c "[.env.KEY, .model]" "$L/settings.json") == "[\"shared-secret\",\"own-secret\"]" && $(jq -r .model "$L/.settings-own.json") == own-secret ]]'
+check "and no jq call had a value of them on its command line" '[[ -s $HOME/jq.log ]] && ! grep -q secret "$HOME/jq.log"'
 
 echo "--- run: refusals (R-017)"
 setup

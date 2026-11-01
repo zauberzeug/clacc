@@ -298,12 +298,14 @@ sync_settings() {
     current=null
   fi
   # A missing or unreadable folder file, or a missing base, counts as no change at all.
+  # Settings can hold secrets such as API keys, so they reach jq through pipes and stay off its
+  # command line, which other processes can read.
   # shellcheck disable=SC2016 # $s, $o, $b, $k and $only are jq variables
-  out=$(jq -n --argjson only "$own_settings" --argjson o "$current" \
-    --argjson s "$(jq -c . "$shared" 2> /dev/null || echo '{}')" \
-    --argjson b "$(jq -c . "$base" 2> /dev/null || echo null)" \
-    --argjson k "$(jq -c . "$keep" 2> /dev/null || echo '{}')" '
-    ($b // $o // {}) as $b | ($o // $b) as $o
+  out=$(jq -n --argjson only "$own_settings" --slurpfile o <(printf '%s\n' "$current") \
+    --slurpfile s <(jq -c . "$shared" 2> /dev/null || echo '{}') \
+    --slurpfile b <(jq -c . "$base" 2> /dev/null || echo null) \
+    --slurpfile k <(jq -c . "$keep" 2> /dev/null || echo '{}') '
+    ($b[0] // $o[0] // {}) as $b | ($o[0] // $b) as $o | $s[0] as $s | $k[0] as $k
     | [[$o, $b] | map(keys[]) | unique[] | select($o[.] != $b[.])] as $changed
     | ($k + ([$changed[] | select(IN($only[])) | {(.): $o[.]}] | add // {}) | with_entries(select(.value != null))) as $k
     | [$changed[] | select(IN($only[]) | not)] as $session
