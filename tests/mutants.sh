@@ -93,4 +93,6 @@ install_mutant install-leaves-temporary-file '/^trap /d'
 install_mutant install-runs-while-cut-off '/^main() {$/d; /^}$/d; /^main$/d'
 wait
 sort "$work"/*.result
+# Reading the log of a CI run takes admin rights, while its annotations are public.
+if [[ -n ${GITHUB_ACTIONS:-} ]]; then grep -hv '^caught' "$work"/*.result | sed 's/^/::error::/'; fi
 ! grep -qv '^caught' "$work"/*.result
