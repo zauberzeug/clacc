@@ -18,4 +18,5 @@ The exit code says how a command ended:
 A tool that fails underneath, such as `jq` on a broken file, stops clacc with that tool's message and exit code.
 
 `clacc --help` prints the commands to stdout and exits with 0 on any system, without `jq` and without touching the store.
+`clacc update` needs Linux or macOS, and neither `jq` nor the store (R-033).
 Every other command needs Linux or macOS and `jq`, and exits with 1 without them.

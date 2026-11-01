@@ -43,9 +43,10 @@ clacc is a single bash script. It needs Linux or macOS, [jq](https://jqlang.org)
 curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/install.sh | bash
 ```
 
-This puts `clacc` into `~/.local/bin`. Run it again to update.
+This puts `clacc` into `~/.local/bin`. Later, `clacc update` or this line again gets the newest
+version.
 
-Or clone this repository and link `clacc` into a folder on your `PATH`.
+Or clone this repository, link `clacc` into a folder on your `PATH`, and update it with `git pull`.
 
 ## Usage
 
@@ -62,6 +63,7 @@ clacc run -c             # the same, with options for claude
 clacc run -- "fix it"    # and with a prompt, which would otherwise be read as a name
 clacc rename work acme   # give a stored account another name
 clacc                    # show the active account, the stored ones and the local ones
+clacc update             # get the newest clacc from the main branch
 ```
 
 A shortcut for sessions on one account is a one-line alias:

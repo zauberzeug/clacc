@@ -45,6 +45,7 @@ held=()
 login_dir=""
 lent=""
 picked=""
+new_copy=""
 keychain_user="" # set on macOS, where the logins are in the Keychain
 
 main() {
@@ -55,6 +56,12 @@ main() {
     *) die "clacc needs Linux or macOS" ;;
   esac
   trap cleanup EXIT
+  # An update needs neither jq nor the store.
+  if [[ ${1:-} == update ]]; then
+    [[ $# -eq 1 ]] || usage
+    update
+    return
+  fi
   command -v jq > /dev/null || die "clacc needs jq (https://jqlang.org)"
   mkdir -p "$store"
   case "${1:-}" in
@@ -84,6 +91,7 @@ clacc run [name] [args...]  start one session on [name]'s own login, passing arg
 clacc add <name>            sign in to another account without touching the active one
 clacc save <name>           store the active login under <name>, e.g. after a manual /login
 clacc rename <old> <new>    give a stored account another name
+clacc update                get the newest clacc from the main branch
 
 Without a name, switch and run take the account with the most headroom. A first word after
 run that is not an option is a name, so a prompt needs a leading --: clacc run -- "fix it"
@@ -407,6 +415,27 @@ rename_account() {
   echo "renamed $old to $new"
 }
 
+# Put the newest clacc from main in this copy's place. Read from standard input or sourced, $0 only
+# names the bash, which a file in this folder can share. A clone belongs to git. The rename leaves
+# the old file to the bash still reading it. A download whose help starts with anything else, such
+# as a web page, an empty file or a file cut off, never replaces a clacc that works.
+update() {
+  local self=$0 folder
+  folder=$(dirname "$self")
+  [[ ${BASH_SOURCE[0]:-} == "$self" && ! -L $self && ! -e $folder/.git ]] || die "cannot update $self: it is not an installed copy; in a clone use git pull"
+  [[ -w $folder ]] || die "cannot update $self: its folder is not writable"
+  new_copy=$self.tmp.$$
+  curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/clacc -o "$new_copy"
+  chmod "$(file_mode "$self")" "$new_copy"
+  [[ $(bash "$new_copy" --help 2> /dev/null < /dev/null) == clacc* ]] || die "the download does not run; nothing changed"
+  if cmp -s "$new_copy" "$self"; then
+    echo "clacc is up to date"
+    return
+  fi
+  mv -f "$new_copy" "$self"
+  echo "updated clacc to the newest version"
+}
+
 # The stored name whose record carries this account id.
 name_of() {
   local name
@@ -473,9 +502,10 @@ unlock_all() {
   held=()
 }
 
-# On every exit: close a login folder, then release the locks.
+# On every exit: close a login folder, remove the download of an update, then release the locks.
 cleanup() {
   close_login_dir
+  if [[ -n $new_copy ]]; then rm -f "$new_copy"; fi
   unlock_all
 }
 
