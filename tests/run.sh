@@ -395,8 +395,13 @@ check "it comes back even when clacc is stopped right after the renewal" '[[ $co
 echo "--- a switch while a parked token is being read"
 setup
 held "$S/.lent.lock"
+run switch beta
+check "waits for the reading, then gives up and moves nothing" '[[ $code == 1 && $out == *".lent.lock is held"* && $(active_tok) == tokA && $(rec) == a@x ]]'
+rmdir "$S/.lent.lock"
+setup
+held "$S/.lent.lock"
 STUB_RELEASE=$S/.lent.lock run switch beta
-check "waits until the reading is over" '[[ $code == 0 && -s $HOME/sleep.log && $(active_tok) == tokB ]]'
+check "and goes through as soon as the reading is over" '[[ $code == 0 && -s $HOME/sleep.log && $(active_tok) == tokB ]]'
 
 echo "--- run without a name"
 setup
