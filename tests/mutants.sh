@@ -9,6 +9,8 @@ src=$(cd "$here/.." && pwd)/clacc
 installer=$(cd "$here/.." && pwd)/install.sh
 work=$(mktemp -d) || exit 1
 trap 'rm -rf "$work"' EXIT
+# The checks only compute, so more runs at a time than processors just keep one another waiting.
+processors=$(getconf _NPROCESSORS_ONLN)
 
 # Each sed program removes or weakens one safeguard. The optional arguments name another file to
 # break and the variable that hands its copy to tests/run.sh.
@@ -20,11 +22,14 @@ mutant() {
     echo "stale  $name: its edit no longer applies to $(basename "$from")" > "$work/$name.result"
     return
   fi
+  while (($(jobs -r | wc -l) >= processors)); do sleep 0.1; done
   (
-    if env "$var=$work/$name" "$here/run.sh" > "$work/$name.out" 2>&1; then
-      echo "LIVED  $name" > "$work/$name.result"
+    env "$var=$work/$name" CLACC_STOP_AT_FAIL=1 "$here/run.sh" > "$work/$name.out" 2>&1
+    first=$(grep -m 1 '^FAIL' "$work/$name.out")
+    if [[ -n $first ]]; then
+      echo "caught $name by: ${first#FAIL }" > "$work/$name.result"
     else
-      echo "caught $name ($(grep -c '^FAIL' "$work/$name.out") checks failed)" > "$work/$name.result"
+      echo "LIVED  $name" > "$work/$name.result"
     fi
   ) &
 }

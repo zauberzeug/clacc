@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Exercise clacc against a stand-in for claude, in a throwaway HOME with fake tokens.
-# Usage: tests/run.sh   (CLACC=<path> tests another copy of the script, CLACC_INSTALLER=<path> of install.sh)
+# Usage: tests/run.sh   (CLACC=<path> tests another copy of the script, CLACC_INSTALLER=<path> of install.sh,
+# and CLACC_STOP_AT_FAIL=1 ends the run at the first failing check)
 # Each check is single-quoted on purpose and check() evaluates it, so shellcheck cannot see that
 # the variables and helpers it uses are used (SC2317 in shellcheck 0.9, SC2329 from 0.10 on).
 # shellcheck disable=SC2016,SC2034,SC2317,SC2329
@@ -28,7 +29,13 @@ checks=0
 
 check() {
   checks=$((checks + 1))
-  if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi
+  if eval "$2"; then
+    echo "ok   $1"
+  else
+    echo "FAIL $1"
+    fails=$((fails + 1))
+    if [[ -n ${CLACC_STOP_AT_FAIL:-} ]]; then exit 1; fi
+  fi
 }
 
 setup() {
