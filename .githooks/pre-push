@@ -7,7 +7,8 @@ while read -r _ sha remote_ref remote_sha; do
   target=check
   # A first push has nothing to compare with, and so runs everything.
   if changed=$(git diff --name-only "$remote_sha" "$sha" 2> /dev/null) && ! grep -qv '\.md$' <<< "$changed"; then target=lint; fi
-  copy=$(mktemp -d)
+  # With a template, because mktemp on macOS ignores TMPDIR without one.
+  copy=$(mktemp -d "${TMPDIR:-/tmp}/clacc-gate.XXXXXX")
   trap 'rm -rf "$copy"' EXIT
   git archive "$sha" | tar -x -C "$copy"
   make -C "$copy" "$target" < /dev/null
