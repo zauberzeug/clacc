@@ -645,6 +645,13 @@ check "so does a download that does not run, such as a web page" '[[ $code == 1 
 : > "$HOME/empty"
 STUB_CURL_FILE=$HOME/empty install_clacc
 check "and an empty one" '[[ $code == 1 && $out == *"does not run"* && $(cat "$installed") == old ]]'
+# Cut off right after the word set, a download prints every variable, and with them its own file name.
+{
+  head -n 1 "$script"
+  echo set
+} > "$HOME/cut"
+STUB_CURL_FILE=$HOME/cut install_clacc
+check "and one cut off where it prints other things" '[[ $code == 1 && $out == *"does not run"* && $(cat "$installed") == old ]]'
 check "and no temporary file stays behind" '[[ $(ls "$HOME/.local/bin") == clacc ]]'
 rm "$HOME/stub.log"
 out=$(sed '/^  mv -f/q' "$installer" | bash 2>&1)
