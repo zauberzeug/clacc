@@ -676,12 +676,127 @@ check "a failed download keeps the installed one" '[[ $code != 0 && $(cat "$inst
 echo '<!DOCTYPE html>' > "$HOME/page"
 STUB_CURL_FILE=$HOME/page install_clacc
 check "so does a download that does not run, such as a web page" '[[ $code == 1 && $out == *"does not run"* && $(cat "$installed") == old ]]'
+: > "$HOME/empty"
+STUB_CURL_FILE=$HOME/empty install_clacc
+check "and an empty one" '[[ $code == 1 && $out == *"does not run"* && $(cat "$installed") == old ]]'
+# Cut off right after the word set, a download prints every variable, and with them its own file name.
+{
+  head -n 1 "$script"
+  echo set
+} > "$HOME/cut"
+STUB_CURL_FILE=$HOME/cut install_clacc
+check "and one cut off where it prints other things" '[[ $code == 1 && $out == *"does not run"* && $(cat "$installed") == old ]]'
 check "and no temporary file stays behind" '[[ $(ls "$HOME/.local/bin") == clacc ]]'
 rm "$HOME/stub.log"
 out=$(sed '/^  mv -f/q' "$installer" | bash 2>&1)
 check "an installer cut off on its way here does nothing" '[[ ! -e $HOME/stub.log && $(cat "$installed") == old ]]'
 STUB_CURL_FILE=$script install_clacc
 check "installing again updates it" '[[ $code == 0 && $("$installed" --help) == *"clacc switch [name]"* ]]'
+
+echo "--- clacc update (R-007, R-033)"
+setup
+# Only ever on a copy in the throwaway home: an update replaces the file it runs from.
+copy=$HOME/bin/clacc
+mkdir -p "$HOME/bin"
+cp "$script" "$copy"
+chmod 751 "$copy"
+{
+  cat "$script"
+  echo "# a newer version"
+} > "$HOME/newer"
+update_copy() { out=$("$copy" update "$@" 2>&1); code=$?; }
+run --help
+check "--help names update, and starts with the word a copy looks for in a download" '[[ $code == 0 && $out == clacc* && $out == *"clacc update"* ]]'
+# The way a clacc still running reads its file, bit by bit.
+exec 3< "$copy"
+STUB_CURL_FILE=$HOME/newer update_copy
+check "update puts the newest version in place" '[[ $code == 0 && $out == *"updated clacc"* ]] && cmp -s "$copy" "$HOME/newer"'
+check "and a clacc still running reads on in the old one" 'cmp -s - "$script" <&3'
+exec 3<&-
+check "from the raw file, not from the GitHub page of it" '[[ $(last_log) == "curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/clacc -o "* ]]'
+check "with the permissions of the old one" '[[ $(mode "$copy") == 751 ]]'
+check "and no temporary file stays behind" '[[ $(ls "$HOME/bin") == clacc ]]'
+STUB_CURL_FILE=$copy update_copy
+check "the same version again is up to date, with no temporary file" '[[ $code == 0 && $out == "clacc is up to date" && $(ls "$HOME/bin") == clacc ]]'
+update_copy
+check "a failed download keeps the installed one" '[[ $code != 0 ]] && cmp -s "$copy" "$HOME/newer"'
+echo '<!DOCTYPE html>' > "$HOME/page"
+STUB_CURL_FILE=$HOME/page update_copy
+check "so does a download that does not run, such as a web page" '[[ $code == 1 && $out == *"does not run"* ]] && cmp -s "$copy" "$HOME/newer"'
+: > "$HOME/empty"
+STUB_CURL_FILE=$HOME/empty update_copy
+check "and an empty one" '[[ $code == 1 && $out == *"does not run"* ]] && cmp -s "$copy" "$HOME/newer"'
+# Cut off right after the word set, a download prints every variable, and with them its own file name.
+{
+  head -n 1 "$script"
+  echo set
+} > "$HOME/cut"
+STUB_CURL_FILE=$HOME/cut update_copy
+check "and one cut off where it prints other things" '[[ $code == 1 && $out == *"does not run"* ]] && cmp -s "$copy" "$HOME/newer"'
+# Cut off at a word that reads its input, a download must not get to read what a person types.
+{
+  head -n 1 "$script"
+  echo cat
+} > "$HOME/reader"
+out=$(echo clacc | STUB_CURL_FILE=$HOME/reader "$copy" update 2>&1)
+code=$?
+check "and one that reads what a person types" '[[ $code == 1 && $out == *"does not run"* ]] && cmp -s "$copy" "$HOME/newer"'
+check "and no temporary file stays behind" '[[ $(ls "$HOME/bin") == clacc ]]'
+STUB_CURL_FILE=$script update_copy extra
+check "update takes no argument" '[[ $code == 2 ]] && cmp -s "$copy" "$HOME/newer"'
+STUB_UNAME=FreeBSD STUB_CURL_FILE=$script update_copy
+check "anything but Linux and macOS is refused" '[[ $code == 1 && $out == *"needs Linux or macOS"* ]] && cmp -s "$copy" "$HOME/newer"'
+# Root writes everywhere, so for root no folder can refuse.
+if [[ $EUID != 0 ]]; then
+  chmod 555 "$HOME/bin"
+  STUB_CURL_FILE=$script update_copy
+  chmod 755 "$HOME/bin"
+  check "a folder it cannot write to is named" '[[ $code == 1 && $out == *"not writable"* ]] && cmp -s "$copy" "$HOME/newer"'
+fi
+rm -rf "$S"
+STUB_CURL_FILE=$script update_copy
+check "update makes no store" '[[ $code == 0 && ! -e $S ]]'
+# A folder with nothing but what an update takes, which puts jq and any clacc on this machine out of reach.
+mkdir "$HOME/tools"
+for tool in bash cat chmod cmp dirname mv rm stat; do ln -s "$(command -v "$tool")" "$HOME/tools/"; done
+ln -s "$here/stub/curl" "$here/stub/uname" "$HOME/tools/"
+out=$(PATH=$HOME/tools "$copy" 2>&1)
+code=$?
+check "without jq every other command refuses" '[[ $code == 1 && $out == *"needs jq"* ]]'
+out=$(PATH=$HOME/tools STUB_CURL_FILE=$HOME/newer "$copy" update 2>&1)
+code=$?
+check "and an update needs none" '[[ $code == 0 ]] && cmp -s "$copy" "$HOME/newer"'
+STUB_CURL_FILE=$script update_copy
+out=$(PATH=$HOME/bin:$HOME/tools STUB_CURL_FILE=$HOME/newer clacc update 2>&1)
+check "found through the PATH, it replaces that file" 'cmp -s "$copy" "$HOME/newer"'
+STUB_CURL_FILE=$script update_copy
+chmod 644 "$copy"
+out=$(STUB_CURL_FILE=$HOME/newer bash "$copy" update 2>&1)
+code=$?
+check "a copy that is not executable, run by bash, is replaced too" '[[ $code == 0 ]] && cmp -s "$copy" "$HOME/newer"'
+mkdir -p "$HOME/clone/.git"
+cp "$script" "$HOME/clone/clacc"
+out=$(STUB_CURL_FILE=$HOME/newer "$HOME/clone/clacc" update 2>&1)
+code=$?
+check "a clone is left to git" '[[ $code == 1 && $out == *"git pull"* ]] && cmp -s "$HOME/clone/clacc" "$script"'
+ln -s "$HOME/clone/clacc" "$HOME/bin/link"
+out=$(STUB_CURL_FILE=$HOME/newer "$HOME/bin/link" update 2>&1)
+code=$?
+check "so is a link into it, which stays a link" '[[ $code == 1 && -L $HOME/bin/link ]] && cmp -s "$HOME/clone/clacc" "$script"'
+mkdir "$HOME/worktree"
+echo "gitdir: elsewhere" > "$HOME/worktree/.git"
+cp "$script" "$HOME/worktree/clacc"
+out=$(STUB_CURL_FILE=$HOME/newer "$HOME/worktree/clacc" update 2>&1)
+code=$?
+check "and a git worktree, where .git is a file" '[[ $code == 1 ]] && cmp -s "$HOME/worktree/clacc" "$script"'
+# Read from standard input or sourced, $0 only names the bash, and a file may share that name.
+echo keep > "$HOME/bash"
+out=$(cd "$HOME" && STUB_CURL_FILE=$HOME/newer bash -s update < "$script" 2>&1)
+code=$?
+check "a clacc read from standard input has no file of its own" '[[ $code == 1 && $out == *"cannot update"* && $(cat "$HOME/bash") == keep ]]'
+out=$(cd "$HOME" && STUB_CURL_FILE=$HOME/newer bash -c '. "$1" update' bash "$script" 2>&1)
+code=$?
+check "neither has a sourced one" '[[ $code == 1 && $out == *"cannot update"* && $(cat "$HOME/bash") == keep ]]'
 
 echo "--- the tests themselves (R-026)"
 setup

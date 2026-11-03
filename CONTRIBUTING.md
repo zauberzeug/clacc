@@ -60,7 +60,7 @@ The one exception is a store from an earlier version of clacc, which must keep w
 
 Each commit is a complete, working step.
 Prefer the simplest code that meets the requirement, and three similar lines to an abstraction nobody asked for.
-clacc stays one script with no dependencies beyond `jq` and the base tools (R-023).
+clacc stays one script with no dependencies beyond `jq` and the base tools, and `curl` to install or update it (R-023).
 
 ## Landing a change
 
@@ -72,7 +72,7 @@ A maintainer squash-merges it, so the title becomes the commit subject on `main`
 To catch up with `main`, merge it into your branch, and do not force-push.
 
 **Mainline.** Maintainers and their agents commit straight to `main` in small green steps and push as they go.
-A push is a release, because `install.sh` downloads `clacc` from `main` (R-025).
+A push is a release, because `install.sh` and `clacc update` download `clacc` from `main` (R-025, R-033).
 So `make setup` turns on a gate that checks each push to `main` on a clean copy (R-028), and CI runs every push on Linux and macOS.
 A red `main` is the next job, and a new commit or `git revert` fixes it, never a rewrite of history.
 

@@ -6,7 +6,7 @@ status: active
 
 # Nothing reaches main unchecked
 
-A push to `main` runs the full gate first, and a red gate refuses the push, because `main` is what `install.sh` hands to users (R-025).
+A push to `main` runs the full gate first, and a red gate refuses the push, because `main` is what `install.sh` and `clacc update` hand to users (R-025, R-033).
 
 - The gate runs on a clean copy of the pushed commit, so an uncommitted file cannot decide the result.
 - A push that changes only Markdown runs the lint alone, which includes the requirements check (R-029).

@@ -12,8 +12,8 @@ main() {
   mkdir -p "$bin"
   curl -fsSL https://raw.githubusercontent.com/zauberzeug/clacc/main/clacc -o "$new"
   chmod +x "$new"
-  # Whatever does not run, such as a web page, never replaces a clacc that does.
-  "$new" --help > /dev/null || {
+  # A download whose help starts with anything else, such as a web page, an empty file or a file cut off, never replaces a clacc that works.
+  [[ $("$new" --help 2> /dev/null) == clacc* ]] || {
     echo "clacc: the download does not run; nothing changed" >&2
     exit 1
   }

@@ -29,7 +29,7 @@ It covers commits and pushes of the work you were asked to do, and nothing else.
 
 Open a pull request instead when someone asks for one, when you have no write access, or when a change needs a discussion before it lands.
 
-A push is a release, because `install.sh` downloads `clacc` from `main` (R-025).
+A push is a release, because `install.sh` and `clacc update` download `clacc` from `main` (R-025, R-033).
 The push gate holds back what fails (R-028), so run `make setup` once per clone.
 
 ### What makes a commit good enough to push
