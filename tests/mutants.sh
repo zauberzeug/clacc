@@ -50,6 +50,7 @@ mutant no-run-account-check 's|^  if \[\[ \${1:-} != auth \]\]; then check_local
 mutant run-check-ignores-org 's#elif \$g.organizationUuid and#elif false and#'
 mutant seed-keeps-account-record 's|^    del(.oauthAccount)$|    .|'
 mutant add-no-name-check 's#^  \[\[ ! -f \$store/\$name.account.json || .*#  :#'
+mutant identity-ignores-the-organisation 's#"\\(.accountUuid) \\(.organizationUuid // "")"#"\\(.accountUuid)"#'
 mutant add-leaves-login-folder 's|^  rm -rf "\$login_dir" "\$login_dir.lock"$|  :|'
 mutant projects-not-shared 's|^shared_dirs=(projects |shared_dirs=(|'
 mutant add-login-in-shared-config 's|CLAUDE_CONFIG_DIR=\$login_dir claude auth login|claude auth login|'

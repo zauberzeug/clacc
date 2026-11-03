@@ -11,6 +11,6 @@ A login of another account would run every later `run` session on it, so clacc t
 
 The check lets these pass:
 
-- a login or a stored record with no organisation yet, as long as the account is the right one,
+- a login or a stored record with no organisation yet, as long as the account id is the right one,
 - any login under a name with no stored account,
 - a call of an `auth` subcommand such as `auth status`.

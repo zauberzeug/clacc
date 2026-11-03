@@ -8,7 +8,10 @@ status: active
 
 clacc uses these words, in the code and in everything written about it.
 
-- **Account:** a Claude account, which clacc recognizes by its account id (`accountUuid`).
+- **Account:** a Claude account in one organisation.
+  clacc recognizes it by two ids in its record, as Claude Code does: the account id (`accountUuid`) and the organisation id (`organizationUuid`).
+  So one email in two organisations is two accounts, for example a personal subscription and a company plan.
+  A record without an organisation id matches only another record without one.
 - **Name:** the label a person gives an account in clacc (R-004).
 - **Login** (the code says `token`): what Claude Code keeps after a sign-in, with the access token and the refresh token that keep a session signed in.
   A login can also hold the sign-ins to MCP servers, and those move with it.

@@ -7,7 +7,7 @@ status: active
 # A name is only a file name
 
 A name labels a stored account and says nothing about it.
-clacc finds the active account by its account id, so a rename or a new name never changes which account is active.
+clacc finds the active account by the ids in its record, so a rename or a new name never changes which account is active (R-002).
 
 A name consists of lowercase letters, digits, dots, `-` and `_`, and begins with a letter or a digit.
 So it stays inside the store and shows up in a listing.

@@ -126,6 +126,9 @@ reading ends. A switch waits meanwhile.
 - Picking an account by headroom has run on real accounts only on Linux so far, with 2.1.316.
 - Headroom is a percentage of each account's own limits, because that is all `/usage` shows. 20% of
   a large plan can be more usage than 30% of a small one, and clacc does not weigh that.
+- One email in two organisations, such as a personal subscription and a company plan, is two
+  accounts to clacc, each with a name of its own, because it tells accounts apart by account and
+  organisation, as Claude Code does.
 - Prompt cache, artifacts and remote sessions belong to an account. After a switch, a session's
   first request cannot reuse the previous account's cache, and pages published from the other
   account are out of sight.

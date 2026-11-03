@@ -41,6 +41,8 @@ shared_dirs=(projects skills agents commands output-styles plugins plans agent-m
 shared_files=(CLAUDE.md keybindings.json history.jsonl statusline-command.sh)
 # The settings a `run` folder keeps for its own account, because another account may not offer them.
 own_settings='["model"]'
+# How a message names the account of a record, as a jq program: one email can be in several organisations.
+who='"\(.emailAddress) in \(.organizationName // "no organisation")"'
 held=()
 login_dir=""
 lent=""
@@ -261,7 +263,6 @@ starts_session() {
 # A login of the wrong account or organisation would run every later `run` session on it.
 check_local_account() {
   local name=$1 dir=$2 verdict
-  local who='"\(.emailAddress) in \(.organizationName // "no organisation")"'
   # shellcheck disable=SC2016 # $w and $g are jq variables
   verdict=$(jq -rn --slurpfile w "$store/$name.account.json" --slurpfile g "$dir/.claude.json" '
     $w[0] as $w | $g[0].oauthAccount as $g
@@ -356,7 +357,7 @@ seed_config() {
 # The login runs in a config folder of its own, so it never touches the shared .claude.json.
 # cleanup removes that folder however add ends.
 add() {
-  local name=$1 record uuid other
+  local name=$1 record id other
   check_name "$name"
   ! has_token "$store/$name.credentials.json" || die "$name is already stored"
   [[ $name != "$(active_name)" ]] || die "$name is the active login"
@@ -367,11 +368,11 @@ add() {
     die "no login happened; nothing changed"
   fi
   record=$(jq -c '.oauthAccount // empty' "$login_dir/.claude.json")
-  uuid=$(jq -r '.accountUuid // empty' <<< "$record")
-  [[ -n $uuid ]] || die "the login left no account record; nothing stored"
-  other=$(name_of "$uuid")
-  [[ -z $other || $other == "$name" ]] || die "you signed in as $(jq -r .emailAddress <<< "$record"), which is already stored as $other; nothing stored"
-  [[ ! -f $store/$name.account.json || $(jq -r .accountUuid "$store/$name.account.json") == "$uuid" ]] || die "you signed in as $(jq -r .emailAddress <<< "$record"), but $name is $(email_of "$name"); nothing stored"
+  id=$(identity <<< "$record")
+  [[ -n $id ]] || die "the login left no account record; nothing stored"
+  other=$(name_of "$id")
+  [[ -z $other || $other == "$name" ]] || die "you signed in as $(jq -r "$who" <<< "$record"), which is already stored as $other; nothing stored"
+  [[ ! -f $store/$name.account.json || $other == "$name" ]] || die "you signed in as $(jq -r "$who" <<< "$record"), but $name is $(jq -r "$who" "$store/$name.account.json"); nothing stored"
   # shellcheck disable=SC2016 # $r is a jq variable
   jq_to "$store/$name.account.json" -n --argjson r "$record" '$r'
   move_token "$login_dir/.credentials.json" "$store/$name.credentials.json"
@@ -379,12 +380,12 @@ add() {
 }
 
 save() {
-  local name=$1 uuid other
+  local name=$1 id other
   check_name "$name"
   lock_all
-  uuid=$(jq -r '.oauthAccount.accountUuid // empty' "$config")
-  [[ -n $uuid ]] || die "there is no active login to store"
-  other=$(name_of "$uuid")
+  id=$(jq .oauthAccount "$config" | identity)
+  [[ -n $id ]] || die "there is no active login to store"
+  other=$(name_of "$id")
   [[ -z $other || $other == "$name" ]] || die "the active login is already stored as $other"
   [[ ! -f $store/$name.account.json || $other == "$name" ]] || die "$name is another account; pick another name"
   jq_to "$store/$name.account.json" .oauthAccount "$config"
@@ -392,7 +393,7 @@ save() {
   echo "stored the active login ($(active_email)) as $name"
 }
 
-# A name is only a file name: the active account is found by its account id, not by its name.
+# A name is only a file name: the active account is found by the ids in its record, not by its name.
 rename_account() {
   local old=$1 new=$2
   check_name "$old"
@@ -407,19 +408,24 @@ rename_account() {
   echo "renamed $old to $new"
 }
 
-# The stored name whose record carries this account id.
+# The stored name whose record has this identity.
 name_of() {
   local name
   [[ -n $1 ]] || return 0
   for name in $(stored_names); do
-    if [[ $(jq -r .accountUuid "$store/$name.account.json") == "$1" ]]; then
+    if [[ $(identity < "$store/$name.account.json") == "$1" ]]; then
       echo "$name"
       return 0
     fi
   done
 }
 
-active_name() { name_of "$(jq -r '.oauthAccount.accountUuid // empty' "$config")"; }
+# The identity of the account in a record on stdin: its account id and its organisation id, which is
+# how Claude Code tells its logins apart. So one email in two organisations is two accounts, and a
+# record without an organisation id matches only another one without. No account id, no identity.
+identity() { jq -r 'if (.accountUuid // "") == "" then empty else "\(.accountUuid) \(.organizationUuid // "")" end'; }
+
+active_name() { name_of "$(jq .oauthAccount "$config" | identity)"; }
 active_email() { jq -r '.oauthAccount.emailAddress // "no account record"' "$config"; }
 email_of() { jq -r .emailAddress "$store/$1.account.json"; }
 

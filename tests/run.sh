@@ -236,6 +236,40 @@ STUB_LOGIN=d run add gamma
 check "signing in as another account than the name's refused" '[[ $code == 1 && $out == *"but gamma is c@x"* && $(jq -r .emailAddress "$S/gamma.account.json") == c@x && ! -e $S/gamma.credentials.json ]]'
 check "no add wrote ~/.claude.json or the active token" '[[ $(sum "$HOME/.claude.json") == "$before" && $(active_tok) == tokA ]]'
 
+echo "--- one email in two organisations: two accounts (R-002, R-004, R-005, R-012, R-013)"
+# beta's account in another organisation, which the stand-in signs in to as b2.
+beta_x='{"accountUuid":"bbbbbbbb-0000-0000-0000-000000000000","emailAddress":"b@x","organizationUuid":"org-x","organizationName":"org-x"}'
+# What a /login leaves behind: the record of the account it signed in to.
+active_record() { jq --argjson r "$1" '.oauthAccount = $r' "$HOME/.claude.json" > "$HOME/x" && mv "$HOME/x" "$HOME/.claude.json"; }
+setup
+echo "$beta_x" > "$S/beta2.account.json"
+echo '{"claudeAiOauth":{"accessToken":"tokB3","refreshToken":"rtokB3"}}' > "$S/beta2.credentials.json"
+run switch beta2
+check "a switch to the other organisation makes it the active account" '[[ $code == 0 && $(active_tok) == tokB3 && $("$script") == *"active: beta2 (b@x)"* && $("$script") == *"stored: beta (b@x)"* ]]'
+run switch beta
+check "a switch between the two parks the token under its own name" '[[ $code == 0 && $out == *"switched from beta2 to beta"* && $(active_tok) == tokB && $(tok "$S/beta2.credentials.json") == tokB3 ]]'
+run switch alpha
+check "a switch away keeps both logins and both records" '[[ $code == 0 && $(tok "$S/beta.credentials.json") == tokB && $(tok "$S/beta2.credentials.json") == tokB3 && $(jq -r .organizationUuid "$S/beta.account.json") == org-b && $(jq -r .organizationUuid "$S/beta2.account.json") == org-x ]]'
+setup
+active_record "$beta_x"
+run
+check "a login to the same email in another organisation is not taken for the stored one" '[[ $out == *"active: not stored (b@x)"* && $out == *"stored: beta (b@x)"* ]]'
+run save beta
+check "and cannot be saved under its name" '[[ $code == 1 && $out == *"beta is another account"* && $(jq -r .organizationUuid "$S/beta.account.json") == org-b ]]'
+run save beta2
+check "but under a name of its own" '[[ $code == 0 && $(jq -r .organizationUuid "$S/beta2.account.json") == org-x && $("$script") == *"active: beta2 (b@x)"* ]]'
+setup
+STUB_LOGIN=b2 run add beta2
+check "add stores a sign-in to the other organisation under a name of its own" '[[ $code == 0 && $(jq -r .organizationUuid "$S/beta2.account.json") == org-x && $(tok "$S/beta2.credentials.json") == tokB3 && $(tok "$S/beta.credentials.json") == tokB ]]'
+setup
+rm "$S/beta.credentials.json"
+STUB_LOGIN=b2 run add beta
+check "and refuses it under the name of the first one, naming both organisations" '[[ $code == 1 && $out == *"you signed in as b@x in org-x, but beta is b@x in org-b"* && $(jq -r .organizationUuid "$S/beta.account.json") == org-b && ! -e $S/beta.credentials.json ]]'
+setup
+active_record '{"accountUuid":"bbbbbbbb-0000-0000-0000-000000000000","emailAddress":"b@x"}'
+run
+check "a login with no organisation recorded is not taken for one in an organisation" '[[ $out == *"active: not stored (b@x)"* ]]'
+
 echo "--- run: one session on an account's own login (R-003, R-005, R-015)"
 setup
 before=$(sum "$HOME/.claude.json")

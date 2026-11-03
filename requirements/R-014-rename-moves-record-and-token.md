@@ -7,7 +7,7 @@ status: active
 # Rename moves record and token
 
 `clacc rename <old> <new>` gives a stored account another name and moves its record and its parked token with it.
-The active account can be renamed too, because clacc finds it by its account id (R-004).
+The active account can be renamed too, because clacc finds it by the ids in its record (R-004).
 
 clacc refuses when `<old>` is not stored, or when `<new>` cannot be a name or is already taken by a record or a token.
 
