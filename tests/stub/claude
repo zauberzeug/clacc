@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Stand-in for claude. `claude auth login` signs in as STUB_LOGIN: the active account (a), the
-# stored one (b), the stored one without an organisation recorded yet (b0), the stored one in
-# another organisation (b2), a new one (d), or none (the login fails). It writes where the real
-# one does: the token into the token folder, or on macOS into the Keychain item of the config
-# folder, and the account record into the config file. Every call is logged to $HOME/stub.log
-# with the folders it would use.
+# Stand-in for claude. `claude auth login` prints the prompt for the code, as the real one does, and
+# signs in as STUB_LOGIN: the active account (a), the stored one (b), the stored one without an
+# organisation recorded yet (b0), the stored one in another organisation (b2), a new one (d), or
+# none (the login fails). It writes where the real one does: the token into the token folder, or on
+# macOS into the Keychain item of the config folder, and the account record into the config file.
+# Every call is logged to $HOME/stub.log with the folders it would use.
 #
 # `claude -p /usage` prints the /usage text for the login of its folder, from STUB_USAGE: "tokA=50,10"
 # means 50% of the five-hour limit and 10% of the week are used, and "-" that a limit is not shown.
@@ -73,6 +73,7 @@ kind=session
 if [[ ${1:-} == auth ]]; then kind=auth; fi
 echo "$kind config=${CLAUDE_CONFIG_DIR:-unset} secure=${CLAUDE_SECURESTORAGE_CONFIG_DIR:-unset} global=${CLACC_CLAUDE_CONFIG_DIR-unset} args=$*" >> "$HOME/stub.log"
 [[ ${1:-} == auth && ${2:-} == login ]] || exit 0
+printf 'Paste code here if prompted > '
 case "${STUB_LOGIN:-none}" in
   a) uuid=aaaaaaaa-0000-0000-0000-000000000000 email=a@x tok=tokA2 ;;
   b) uuid=bbbbbbbb-0000-0000-0000-000000000000 email=b@x tok=tokB2 org=org-b ;;

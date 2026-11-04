@@ -179,6 +179,7 @@ run_local() {
     want=$(jq -r '.emailAddress // empty' "$store/$name.account.json" 2> /dev/null || true)
     if [[ -n $want ]]; then sign_in+=(--email "$want"); fi
     echo "First start on $name: sign in once${want:+ as $want} in the browser."
+    stop_terminal_reports
     claude "${sign_in[@]}" || die "no login happened"
   fi
   if [[ ${1:-} != auth ]]; then check_local_account "$name" "$dir"; fi
@@ -362,6 +363,14 @@ seed_config() {
     | if .projects then .projects |= map_values(del(.hasUnseenTeamArtifacts, .loggedAuthoredArtifactPaths)) else . end' "$config"
 }
 
+# A Claude Code session can end and leave the terminal reporting mouse clicks and moves (modes 1000,
+# 1002 and 1003, with 1006 for their encoding), focus changes (1004) and the bounds of a paste
+# (2004). Each report comes in like typed text, so during a sign-in it would land in the pasted
+# code. A program that wants them turns them on again.
+stop_terminal_reports() {
+  if [[ -t 0 && -t 1 ]]; then printf '\e[?1000l\e[?1002l\e[?1003l\e[?1004l\e[?1006l\e[?2004l'; fi
+}
+
 # The login runs in a config folder of its own, so it never touches the shared .claude.json.
 # cleanup removes that folder however add ends.
 add() {
@@ -372,6 +381,7 @@ add() {
   login_dir=$(mktemp -d "$store/login.XXXXXX")
   seed_config "$login_dir"
   echo "Sign in as $name in the browser. Every session keeps its account meanwhile."
+  stop_terminal_reports
   if ! CLAUDE_CONFIG_DIR=$login_dir claude auth login --claudeai || ! has_token "$login_dir/.credentials.json"; then
     die "no login happened; nothing changed"
   fi

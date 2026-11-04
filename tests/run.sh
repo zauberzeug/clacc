@@ -389,6 +389,26 @@ STUB_LOGIN=d run_tty run delta
 check "a name with no stored account takes any login" '[[ $code == 0 && $(last_log) == "session config=$S/delta.local secure=unset global= args=" ]]'
 check "the global login untouched by all of it" '[[ $(active_tok) == tokA && $(rec) == a@x ]]'
 
+echo "--- a sign-in turns off terminal reports (R-013, R-015, R-034)"
+esc=$'\e'
+# Whether clacc turned off every report a terminal can mix into the pasted code before the sign-in
+# asked for it: mouse clicks and moves, focus changes and the bounds of a paste.
+reports_off() {
+  local before=${out%%Paste code here*} report
+  [[ $before != "$out" ]] || return 1
+  for report in 1000 1002 1003 1004 1006 2004; do
+    [[ $before == *"${esc}[?${report}l"* ]] || return 1
+  done
+}
+setup
+STUB_LOGIN=d run_tty add delta
+check "add turns them off before the sign-in asks for the code" '[[ $code == 0 && $(tok "$S/delta.credentials.json") == tokD ]] && reports_off'
+STUB_LOGIN=b run_tty run beta
+check "so does the first start of run" '[[ $code == 0 && $(last_log) == "session config=$S/beta.local secure=unset global= args=" ]] && reports_off'
+setup
+STUB_LOGIN=d run add delta
+check "without a terminal, add sends no such codes" '[[ $code == 0 && $out == *"Paste code here"* && $out != *"$esc"* ]]'
+
 echo "--- switch without a name: the account with the most headroom (R-030)"
 setup
 STUB_USAGE="tokA=50,10 tokB=20,30" run switch

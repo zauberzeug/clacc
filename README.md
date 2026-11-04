@@ -134,6 +134,9 @@ reading ends. A switch waits meanwhile.
 - Prompt cache, artifacts and remote sessions belong to an account. After a switch, a session's
   first request cannot reuse the previous account's cache, and pages published from the other
   account are out of sight.
+- A Claude Code session can end and leave the terminal reporting mouse moves. They then turn up as
+  text such as `0;83;9M` in whatever you type, and a pasted code no longer works. `clacc add` and
+  the first `clacc run` turn these reports off before you paste the code; elsewhere, `reset` does.
 - clacc follows `CLAUDE_CONFIG_DIR` when you have set it for Claude Code. It keeps its own files in
   `~/.clacc`, or in the folder named by `CLACC_HOME`.
 
